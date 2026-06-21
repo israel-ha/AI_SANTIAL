@@ -10,6 +10,7 @@ Responsibilities:
 This module has NO knowledge of networking, display, or Flask.
 It receives frames and returns the current tracking state dictionary.
 """
+import logging
 import math
 import time
 import cv2
@@ -20,6 +21,8 @@ from ultralytics import YOLO
 
 from shared import config
 from edge_node.feature_extractor import FeatureExtractor
+
+log = logging.getLogger(__name__)
 
 
 class Detector:
@@ -33,14 +36,20 @@ class Detector:
         if model is not None:
             self._model = model
         else:
-            print(f"[INFO] Detector: loading YOLO model from {config.YOLO_MODEL_PATH} …")
+            log.info("Detector: loading YOLO model from %s …", config.YOLO_MODEL_PATH)
             self._model = YOLO(config.YOLO_MODEL_PATH)
         self._extractor  = FeatureExtractor()
         self._tracked: Dict[int, dict] = {}
         self._frame_count = 0
         self._frame_w     = 1280
         self._frame_h     = 720
-        print("[INFO] Detector: ready.")
+        log.info(
+            "Detector ready — conf=%.2f  imgsz=%d  every_n=%d  tracker=%s",
+            config.YOLO_CONF_THRESHOLD,
+            config.YOLO_INPUT_SIZE,
+            config.YOLO_EVERY_N_FRAMES,
+            config.TRACKER_CONFIG_PATH,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -117,35 +126,78 @@ class Detector:
     # ------------------------------------------------------------------
 
     def _run_yolo(self, frame: np.ndarray):
-        small   = cv2.resize(frame, (config.YOLO_INPUT_SIZE, config.YOLO_INPUT_SIZE))
-        scale_x = self._frame_w / config.YOLO_INPUT_SIZE
-        scale_y = self._frame_h / config.YOLO_INPUT_SIZE
+        # Pass the native-resolution frame; Ultralytics letterboxes internally.
+        # Manual resize to a square (old behaviour) distorts 16:9 and hurts accuracy.
+        try:
+            results = self._model.track(
+                frame,
+                persist   = True,
+                verbose   = False,
+                conf      = config.YOLO_CONF_THRESHOLD,
+                imgsz     = config.YOLO_INPUT_SIZE,
+                classes   = [0],                       # persons only
+                tracker   = config.TRACKER_CONFIG_PATH,
+            )
+        except Exception as exc:
+            log.error("[Detector] model.track() raised an exception: %s", exc, exc_info=True)
+            return
 
-        results = self._model.track(
-            small,
-            persist   = True,
-            verbose   = False,
-            conf      = config.YOLO_CONF_THRESHOLD,
-            imgsz     = config.YOLO_INPUT_SIZE,
-            classes   = [0],                      # persons only
-            tracker   = config.TRACKER_CONFIG_PATH,
+        # ── Diagnostics ───────────────────────────────────────────────────
+        total_boxes  = sum(len(r.boxes) for r in results if r.boxes is not None)
+        total_with_id = sum(
+            len(r.boxes.id) for r in results
+            if r.boxes is not None and r.boxes.id is not None
         )
 
-        detected_ids: set        = set()
-        crops:        List       = []
-        pids:         List[int]  = []
+        # Log every ~10 inference passes (~3 s at 30 fps / every-3-frames cadence)
+        _log_every = config.YOLO_EVERY_N_FRAMES * 10
+        if self._frame_count % _log_every == 0 or total_boxes == 0:
+            if total_boxes == 0:
+                log.warning(
+                    "[Detector] frame %d — Raw detections: 0  "
+                    "(conf_threshold=%.2f may be too high, or the video source has no people). "
+                    "Tracker IDs assigned: 0.",
+                    self._frame_count, config.YOLO_CONF_THRESHOLD,
+                )
+            else:
+                log.info(
+                    "[Detector] frame %d — Raw detections: %d  |  "
+                    "Tracker IDs assigned: %d  |  conf_threshold=%.2f",
+                    self._frame_count, total_boxes, total_with_id,
+                    config.YOLO_CONF_THRESHOLD,
+                )
+        # ──────────────────────────────────────────────────────────────────
+
+        detected_ids: set       = set()
+        crops:        List      = []
+        pids:         List[int] = []
 
         for result in results:
-            if result.boxes.id is None:
+            if result.boxes is None or len(result.boxes) == 0:
                 continue
-            for obj_id, box in zip(
-                result.boxes.id.int().cpu().numpy(),
-                result.boxes.xyxy.cpu().numpy(),
-            ):
-                x1 = max(0, int(box[0] * scale_x))
-                y1 = max(0, int(box[1] * scale_y))
-                x2 = min(self._frame_w, int(box[2] * scale_x))
-                y2 = min(self._frame_h, int(box[3] * scale_y))
+
+            boxes_xyxy = result.boxes.xyxy.cpu().numpy()
+
+            # Prefer tracker IDs; fall back to sequential synthetic IDs when
+            # ByteTrack hasn't confirmed a track yet (happens on the very first
+            # frame, or when new_track_thresh filters the detection out).
+            # Synthetic IDs are negative so they never collide with real tracks.
+            if result.boxes.id is not None:
+                ids = result.boxes.id.int().cpu().numpy()
+            else:
+                log.info(
+                    "[Detector] frame %d — ByteTrack returned no IDs for %d raw box(es); "
+                    "using synthetic IDs. If this keeps happening, check new_track_thresh "
+                    "in tracker.yaml (currently should be 0.25).",
+                    self._frame_count, len(boxes_xyxy),
+                )
+                ids = [-(i + 1) for i in range(len(boxes_xyxy))]
+
+            for obj_id, box in zip(ids, boxes_xyxy):
+                x1 = max(0, int(box[0]))
+                y1 = max(0, int(box[1]))
+                x2 = min(self._frame_w, int(box[2]))
+                y2 = min(self._frame_h, int(box[3]))
                 tid = int(obj_id)
 
                 detected_ids.add(tid)

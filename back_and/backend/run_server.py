@@ -6,9 +6,19 @@ Start this first, then start run_edge.py in a separate terminal.
 Usage:
     python run_server.py
 """
+import logging
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+logging.basicConfig(
+    level  = logging.INFO,
+    format = "%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    datefmt= "%H:%M:%S",
+)
+# Suppress noisy third-party loggers
+logging.getLogger("ultralytics").setLevel(logging.WARNING)
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 from shared import config
 from central_server.app import create_app, socketio, purge_debug_rules, sync_rules_from_firebase
