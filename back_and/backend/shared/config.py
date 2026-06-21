@@ -37,7 +37,7 @@ _tracker_legacy = os.path.join(BASE_DIR, "tracker.yaml")
 TRACKER_CONFIG_PATH = _tracker_new if os.path.exists(_tracker_new) else _tracker_legacy
 
 YOLO_CONF_THRESHOLD = float(os.environ.get("YOLO_CONF_THRESHOLD", 0.25))
-YOLO_INPUT_SIZE     = 416
+YOLO_INPUT_SIZE     = 320   # 320 is ~2× faster than 416 on CPU with minimal accuracy loss
 YOLO_EVERY_N_FRAMES = 3
 
 # ---------------------------------------------------------------------------

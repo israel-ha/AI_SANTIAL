@@ -172,9 +172,10 @@ class Detector:
                 persist   = True,
                 verbose   = False,
                 conf      = config.YOLO_CONF_THRESHOLD,
-                imgsz     = config.YOLO_INPUT_SIZE,
+                imgsz     = config.YOLO_INPUT_SIZE,   # 320 — ~2× faster on CPU vs 416
                 classes   = [0],                       # persons only
                 tracker   = config.TRACKER_CONFIG_PATH,
+                half      = True,                      # FP16 on GPU; Ultralytics auto-falls back to FP32 on CPU
             )
         except Exception as exc:
             log.error("[Detector] model.track() raised an exception: %s", exc, exc_info=True)

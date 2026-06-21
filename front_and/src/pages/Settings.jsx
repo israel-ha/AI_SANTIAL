@@ -95,13 +95,29 @@ const Settings = () => {
   // ── Internal: raw fetch for video-source switch ──────────────────────
   const _fetchVideoSwitch = async (mode, filename) => {
     const body = { mode };
+    // Always send the bare filename string — the backend JSON-parses it,
+    // so spaces are transmitted verbatim (no URL-encoding needed here).
     if (mode === 'demo' && filename) body.filename = filename;
+
+    console.log('[Settings] POST /api/video-source', body);
+
     const res = await fetch(`${API_BASE_URL}/api/video-source`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+
+    if (!res.ok) {
+      // Try to get the descriptive message from the JSON error body.
+      let serverMsg = `Server responded with ${res.status}`;
+      try {
+        const errData = await res.json();
+        if (errData?.error?.message) serverMsg = errData.error.message;
+      } catch { /* response wasn't JSON — keep the generic message */ }
+      console.error('[Settings] video-source switch error:', serverMsg);
+      throw new Error(serverMsg);
+    }
+
     return res.json();
   };
 
@@ -115,7 +131,7 @@ const Settings = () => {
       setVideoSource(data);
     } catch (err) {
       console.error('[Settings] switchVideoSource failed:', err);
-      setVideoSourceError('Could not switch source – check backend connection');
+      setVideoSourceError(err.message || 'Could not switch video source – check backend connection');
     } finally {
       setVideoSourceBusy(false);
     }
@@ -309,7 +325,7 @@ const Settings = () => {
                     Demo Scenario
                   </label>
                   <select
-                    value={videoSource?.filename || ''}
+                    value={videoSource?.filename || demoVideos[0] || ''}
                     onChange={e => switchVideoSource('demo', e.target.value)}
                     disabled={videoSourceBusy}
                     className="w-full sm:w-80 bg-slate-800 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"

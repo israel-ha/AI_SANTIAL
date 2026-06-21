@@ -256,34 +256,27 @@ class SpatialEngine:
     @staticmethod
     def _is_climbing(person) -> bool:
         """
-        Detect climbing from centroid position history.
+        Detect climbing via net vertical displacement over the last 35 positions
+        (~1.5–2 s of history at 20 fps).
 
-        Climbing = sustained upward motion in the image (Y coordinate decreasing).
-        Requires:
-          - At least 5 position samples in the window
-          - >= 55 % of consecutive frame-to-frame moves are upward
-          - Net vertical rise >= 15 px over the window
+        Net displacement is resilient to bounding-box jitter: individual frames
+        may bounce up/down, but a true climber shows consistent upward travel
+        over the full window.
 
-        Works purely from pixel positions, independent of configured rules.
-        In image coordinates Y increases downward, so upward physical movement
-        is represented by decreasing Y values.
+        In image coordinates Y increases downward, so moving upward (climbing)
+        means Y *decreases*:
+            net_rise = oldest_y − newest_y   →  positive = moved upward
         """
         positions = person.positions
-        if len(positions) < 5:
+        if len(positions) < 10:
             return False
 
-        window = positions[-12:]   # analyse the most recent 12 centroids
-        n      = len(window)
+        window   = positions[-35:]   # last 35 centroids (~1.5–2 s at 20 fps)
+        oldest_y = window[0][1]
+        newest_y = window[-1][1]
+        net_rise = oldest_y - newest_y   # positive → subject rose in the frame
 
-        upward_moves = sum(
-            1 for i in range(1, n) if window[i][1] < window[i - 1][1]
-        )
-        upward_ratio = upward_moves / max(n - 1, 1)
-
-        # Net rise: positive value means person moved upward in the image.
-        net_rise_px = window[0][1] - window[-1][1]
-
-        return upward_ratio >= 0.55 and net_rise_px >= 15
+        return net_rise >= 30
 
     # ------------------------------------------------------------------
     # Hybrid zone scoring (drawn zones from zone_store)
