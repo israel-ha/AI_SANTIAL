@@ -23,12 +23,20 @@ import threading
 import time
 
 import cv2
+import numpy as np
 
 from shared import config
 from central_server import model_manager
 from central_server.video_sources import LoopingFileSource, DemoVideoSource
 from edge_node.detector import Detector
 from edge_node.payload_builder import build_payload
+
+# BGR colors for zone overlays burned into the recording
+_ZONE_COLORS_CV = {
+    "Low":    (0, 255, 255),   # yellow
+    "Medium": (0, 165, 255),   # orange
+    "High":   (0,   0, 255),   # red
+}
 
 
 def _point_in_polygon(cx: float, cy: float, poly: list) -> bool:
@@ -41,6 +49,42 @@ def _point_in_polygon(cx: float, cy: float, poly: list) -> bool:
             inside = not inside
         j = i
     return inside
+
+
+def _draw_zones_cv(frame: np.ndarray, zones: list) -> np.ndarray:
+    """Burn zone polygons onto *frame* using risk-level colors.
+
+    Returns a new frame (does not mutate the input).
+    Used so the recorded .mp4 clip contains visible zone overlays for forensics.
+    """
+    if not zones:
+        return frame
+    fh, fw = frame.shape[:2]
+    out = frame.copy()
+    for zone in zones:
+        pts_raw = zone.get("points", [])
+        if len(pts_raw) < 3:
+            continue
+        risk  = zone.get("riskLevel", "Medium")
+        color = _ZONE_COLORS_CV.get(risk, _ZONE_COLORS_CV["Medium"])
+        pts   = np.array(
+            [(int(p["x"] * fw), int(p["y"] * fh)) for p in pts_raw],
+            dtype=np.int32,
+        ).reshape((-1, 1, 2))
+        # Semi-transparent fill (alpha blend)
+        overlay = out.copy()
+        cv2.fillPoly(overlay, [pts], color)
+        out = cv2.addWeighted(overlay, 0.15, out, 0.85, 0)
+        # Solid border
+        cv2.polylines(out, [pts], isClosed=True, color=color, thickness=2)
+        # Risk-level label at the first vertex
+        x0, y0 = pts_raw[0]["x"], pts_raw[0]["y"]
+        cv2.putText(
+            out, risk.upper(),
+            (int(x0 * fw) + 4, int(y0 * fh) - 6),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA,
+        )
+    return out
 
 
 class VideoWorker(threading.Thread):
@@ -125,12 +169,8 @@ class VideoWorker(threading.Thread):
 
             # Annotate and emit at STREAM_FPS.
             if now - last_emit >= stream_interval:
-                if self.frame_hook:
-                    try:
-                        self.frame_hook(frame)
-                    except Exception:
-                        pass   # never let the recorder crash the live feed
                 cached    = self.cache_fn(self.camera_id)
+                # 1. Draw bounding boxes + tracking labels
                 annotated = self.annotate_fn(
                     frame,
                     cached.get("risk_results",    []),
@@ -138,6 +178,16 @@ class VideoWorker(threading.Thread):
                     cached.get("effective_times", {}),
                     cached.get("person_map",      {}),
                 )
+                # 2. Burn zone polygons so clips include them for forensics
+                if zones:
+                    annotated = _draw_zones_cv(annotated, zones)
+                # 3. Feed the fully-annotated frame to the alert recorder buffer
+                if self.frame_hook:
+                    try:
+                        self.frame_hook(annotated)
+                    except Exception:
+                        pass   # never let the recorder crash the live feed
+                # 4. Encode and stream to the frontend
                 _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 out_b64 = base64.b64encode(buf).decode("utf-8")
                 self.socketio.emit("processed_frame", f"data:image/jpeg;base64,{out_b64}")

@@ -22,6 +22,8 @@ import collections
 import json
 import os
 import queue
+import shutil
+import subprocess
 import threading
 from datetime import datetime, timezone
 from typing import Optional
@@ -159,14 +161,32 @@ class AlertRecorder:
             print("[WARNING] AlertRecorder: no frames available — clip skipped.")
             return
 
-        path   = meta["videoPath"]
-        h, w   = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(path, fourcc, WRITE_FPS, (w, h))
+        path     = meta["videoPath"]
+        tmp_path = path + ".tmp.mp4"
+        h, w     = frames[0].shape[:2]
+
+        # Try H.264 first (browser-native, no decode delay); fall back to MPEG-4.
+        writer = None
+        for fourcc_str in ("avc1", "X264", "mp4v"):
+            fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+            candidate = cv2.VideoWriter(tmp_path, fourcc, WRITE_FPS, (w, h))
+            if candidate.isOpened():
+                writer = candidate
+                print(f"[INFO] AlertRecorder: codec '{fourcc_str}' selected")
+                break
+            candidate.release()
+
+        if writer is None:
+            print("[ERROR] AlertRecorder: no working video codec — clip skipped.")
+            return
 
         for frm in frames:
             writer.write(frm)
         writer.release()
+
+        # Re-encode with ffmpeg: H.264 + moov-faststart so the browser can start
+        # playing immediately without downloading the whole file first.
+        _ffmpeg_faststart(tmp_path, path)
         print(f"[INFO] AlertRecorder: saved {len(frames)}-frame clip → {path}")
 
         # Persist metadata (upsert by alert id, newest first, max 500 rows)
@@ -175,6 +195,45 @@ class AlertRecorder:
         db.insert(0, meta)
         db = db[:500]
         _save_db(db)
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg post-processing
+# ---------------------------------------------------------------------------
+
+def _ffmpeg_faststart(src: str, dst: str) -> None:
+    """Re-encode with H.264 + moov-faststart for instant browser streaming.
+
+    Moves the moov atom to the front of the file so the browser can begin
+    playback before the download completes.  Falls back to a plain file rename
+    if ffmpeg is not installed or the encode fails.
+    """
+    if shutil.which("ffmpeg"):
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i",        src,
+                    "-c:v",      "libx264",
+                    "-preset",   "fast",
+                    "-crf",      "23",
+                    "-movflags", "+faststart",
+                    dst,
+                ],
+                capture_output=True,
+                timeout=120,
+            )
+            if os.path.exists(src):
+                os.remove(src)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.decode(errors="replace")[:300])
+            return
+        except Exception as exc:
+            print(f"[WARNING] AlertRecorder: ffmpeg faststart failed ({exc}); keeping raw file.")
+            # fall through to rename
+    # ffmpeg not available or failed — move temp file to final path as-is
+    if os.path.exists(src):
+        shutil.move(src, dst)
 
 
 # ---------------------------------------------------------------------------
