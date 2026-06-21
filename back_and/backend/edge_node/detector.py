@@ -43,6 +43,7 @@ class Detector:
         self._frame_count = 0
         self._frame_w     = 1280
         self._frame_h     = 720
+        self._safe_fuse()
         log.info(
             "Detector ready — conf=%.2f  imgsz=%d  every_n=%d  tracker=%s",
             config.YOLO_CONF_THRESHOLD,
@@ -124,6 +125,43 @@ class Detector:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _safe_fuse(self) -> None:
+        """Fuse Conv+BN layers for faster inference.
+
+        Older ultralytics builds (< 8.3.0) crash with
+        ``AttributeError: 'Conv' object has no attribute 'bn'``
+        because their Conv.fuse() does not guard against Conv layers that
+        were saved without an attached BatchNorm.  This method patches those
+        specific modules before calling fuse(), so inference is still
+        accelerated on every layer that *can* be fused.
+
+        Permanent fix: pin ``ultralytics>=8.3.0`` in requirements.
+        """
+        try:
+            from ultralytics.nn.modules.conv import Conv as _UltralyticsConv
+            patched = 0
+            for m in self._model.model.modules():
+                if isinstance(m, _UltralyticsConv) and not hasattr(m, "bn"):
+                    # Return self (unfused) instead of crashing on missing .bn
+                    m.fuse = lambda _m=m: _m
+                    patched += 1
+            if patched:
+                log.warning(
+                    "Detector: patched fuse() on %d Conv module(s) without BatchNorm. "
+                    "Pin ultralytics>=8.3.0 in requirements to avoid this.",
+                    patched,
+                )
+            self._model.fuse()
+            log.info("Detector: model layer fusion complete.")
+        except Exception as exc:
+            # Last resort: disable fusion entirely — slower but functional.
+            self._model.fuse = lambda: self._model
+            log.warning(
+                "Detector: layer fusion disabled (%s). "
+                "Inference will work but be slightly slower.",
+                exc,
+            )
 
     def _run_yolo(self, frame: np.ndarray):
         # Pass the native-resolution frame; Ultralytics letterboxes internally.

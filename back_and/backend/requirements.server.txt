@@ -29,7 +29,7 @@ firebase-admin
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
-ultralytics
+ultralytics>=8.3.0
 Pillow
 numpy<2
 opencv-python-headless

@@ -10,7 +10,7 @@ cython
 torch
 torchvision
 opencv-contrib-python
-ultralytics
+ultralytics>=8.3.0
 Pillow
 
 # --- Server & Utilities ---
