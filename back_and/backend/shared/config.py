@@ -57,7 +57,7 @@ ZONE_VISIT_HISTORY_LEN = 20     # max zone-cluster history kept per person
 ZONE_CLUSTER_RADIUS    = 80     # pixels — min distance to create a new zone cluster
 SEND_INTERVAL_SECONDS  = 1.0    # seconds between AI payloads sent to Central Server
 DETECT_EVERY_N_FRAMES  = int(os.environ.get("DETECT_EVERY_N_FRAMES", 3))   # display frames between detection submissions
-STREAM_FPS             = int(os.environ.get("STREAM_FPS", 10))              # target frame rate for the video stream channel
+STREAM_FPS             = int(os.environ.get("STREAM_FPS", 20))              # target frame rate for the video stream channel
 
 # ---------------------------------------------------------------------------
 # Capture resolution (applied to local webcam sources only; RTSP ignores this)
@@ -143,9 +143,9 @@ ALERT_COOLDOWN_SECONDS = 60     # minimum gap between repeated alerts for the sa
 #   LOITERING — fires when loitering_score reaches this value (matches RISK_ALERT_THRESHOLD)
 #   COMBINED  — fires when total_person_score reaches this value AND neither individual
 #               threshold is met (partial overlap of climbing + loitering activity)
-CLIMBING_ALERT_THRESHOLD  = int(os.environ.get("CLIMBING_ALERT_THRESHOLD",  50))
-LOITERING_ALERT_THRESHOLD = int(os.environ.get("LOITERING_ALERT_THRESHOLD", 70))
-COMBINED_ALERT_THRESHOLD  = int(os.environ.get("COMBINED_ALERT_THRESHOLD",  50))
+CLIMBING_ALERT_THRESHOLD  = int(os.environ.get("CLIMBING_ALERT_THRESHOLD",  100))
+LOITERING_ALERT_THRESHOLD = int(os.environ.get("LOITERING_ALERT_THRESHOLD", 100))
+COMBINED_ALERT_THRESHOLD  = int(os.environ.get("COMBINED_ALERT_THRESHOLD",   50))
 
 # ---------------------------------------------------------------------------
 # Video Sources (Live = looping local file, Demo = looping local file)

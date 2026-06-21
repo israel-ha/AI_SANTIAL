@@ -188,14 +188,21 @@ class VideoWorker(threading.Thread):
                     except Exception:
                         pass   # never let the recorder crash the live feed
                 # 4. Encode and stream to the frontend
-                _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 65])
                 out_b64 = base64.b64encode(buf).decode("utf-8")
                 self.socketio.emit("processed_frame", f"data:image/jpeg;base64,{out_b64}")
                 last_emit = now
 
-            # Pace the loop to the source's native FPS.
+            # Pace to source FPS; skip ahead when behind to maintain real-time playback.
             elapsed = time.time() - loop_start
-            time.sleep(max(0.0, frame_interval - elapsed))
+            if elapsed < frame_interval:
+                time.sleep(frame_interval - elapsed)
+            else:
+                # Behind real-time: consume extra source frames to catch up.
+                # Cap at 8 to avoid a jarring jump on a one-off slow frame.
+                skip = min(int(elapsed / frame_interval) - 1, 8)
+                for _ in range(skip):
+                    self.source.read()
 
         self.source.release()
         print(f"[INFO] VideoWorker[{self.camera_id}]: stopped.")

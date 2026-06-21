@@ -137,7 +137,17 @@ const DynamicScoringPanel = ({ persons = [], activityLog = [] }) => {
   };
   const zoneLevel  = primary?.zone_risk_level ?? null;
   const totalColor = scoreColors(scores.total_person_score);
-  const isAlert    = scores.total_person_score >= 70 || scores.loitering_score >= 70 || scores.climbing_score >= 50;
+
+  // Derive active KPI alert type from triggers list (array of [alert_type, trigger_type] pairs).
+  const triggers = primary?.scores?.triggers ?? [];
+  const kpiTypes = triggers.map(([t]) => t);
+  let kpiAlertLabel = null;
+  if (kpiTypes.includes('climbing+loitering'))                         kpiAlertLabel = 'CLIMBING + LOITERING';
+  else if (kpiTypes.includes('climbing') && kpiTypes.includes('loitering')) kpiAlertLabel = 'CLIMBING + LOITERING';
+  else if (kpiTypes.includes('climbing'))                              kpiAlertLabel = 'CLIMBING';
+  else if (kpiTypes.includes('loitering'))                             kpiAlertLabel = 'LOITERING';
+
+  const isAlert = kpiAlertLabel != null || scores.total_person_score >= 50;
 
   return (
     <>
@@ -213,6 +223,21 @@ const DynamicScoringPanel = ({ persons = [], activityLog = [] }) => {
         {zoneLevel && (
           <div className="px-4 pb-3">
             <ZoneBadge level={zoneLevel} />
+          </div>
+        )}
+
+        {/* ── KPI alert type banner ─────────────────────────────────── */}
+        {kpiAlertLabel && (
+          <div className="px-4 pb-3">
+            <div
+              className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg animate-pulse"
+              style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.5)' }}
+            >
+              <AlertTriangle size={13} className="text-red-400 shrink-0" />
+              <span className="text-xs font-bold text-red-300 tracking-widest">
+                {kpiAlertLabel}
+              </span>
+            </div>
           </div>
         )}
 

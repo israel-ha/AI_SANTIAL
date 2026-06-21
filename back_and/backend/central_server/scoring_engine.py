@@ -130,11 +130,15 @@ class ScoringEngine:
             and not loitering_met
         )
 
-        if climbing_met:
+        if climbing_met and loitering_met:
+            # Both scores maxed — emit a single combined trigger.
+            triggers.append(("climbing+loitering", "BOTH"))
+        elif climbing_met:
             triggers.append(("climbing",  "CLIMBING"))
-        if loitering_met:
+        elif loitering_met:
             triggers.append(("loitering", "LOITERING"))
+
         if combined_met:
-            triggers.append(("combined",  "COMBINED"))
+            triggers.append(("combined", "COMBINED"))
 
         return triggers

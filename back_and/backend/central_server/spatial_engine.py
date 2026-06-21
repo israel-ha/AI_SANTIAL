@@ -185,6 +185,12 @@ class SpatialEngine:
                 in_zone_rule = final_score >= config.RISK_ALERT_THRESHOLD
                 alert_types  = [best_rule.alert_type] if (in_zone_rule and best_rule) else []
 
+            # Supplement with motion-pattern climbing detection.
+            # This fires independently of configured rules so climbing is detected
+            # even when no Firebase "climbing" rule is set up by the operator.
+            if self._is_climbing(person) and "climbing" not in alert_types:
+                alert_types = list(alert_types) + ["climbing"]
+
             in_zone = final_score >= config.RISK_ALERT_THRESHOLD
 
             results.append(RiskResult(
@@ -242,6 +248,42 @@ class SpatialEngine:
         if _segments_cross(prev, curr, pixel_pts[0], pixel_pts[1]):
             return 100
         return 0
+
+    # ------------------------------------------------------------------
+    # Motion-pattern climbing detector
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_climbing(person) -> bool:
+        """
+        Detect climbing from centroid position history.
+
+        Climbing = sustained upward motion in the image (Y coordinate decreasing).
+        Requires:
+          - At least 5 position samples in the window
+          - >= 55 % of consecutive frame-to-frame moves are upward
+          - Net vertical rise >= 15 px over the window
+
+        Works purely from pixel positions, independent of configured rules.
+        In image coordinates Y increases downward, so upward physical movement
+        is represented by decreasing Y values.
+        """
+        positions = person.positions
+        if len(positions) < 5:
+            return False
+
+        window = positions[-12:]   # analyse the most recent 12 centroids
+        n      = len(window)
+
+        upward_moves = sum(
+            1 for i in range(1, n) if window[i][1] < window[i - 1][1]
+        )
+        upward_ratio = upward_moves / max(n - 1, 1)
+
+        # Net rise: positive value means person moved upward in the image.
+        net_rise_px = window[0][1] - window[-1][1]
+
+        return upward_ratio >= 0.55 and net_rise_px >= 15
 
     # ------------------------------------------------------------------
     # Hybrid zone scoring (drawn zones from zone_store)
