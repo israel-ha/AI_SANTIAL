@@ -59,7 +59,7 @@ backend/alert_images/
 # ---------------------------------------------------------------------------
 # Video sources — local "live" loop file and Demo-mode showcase videos
 # ---------------------------------------------------------------------------
-backend/assets/videos/*.mp4
+# backend/assets/videos/*.mp4
 
 # ---------------------------------------------------------------------------
 # Frontend — Node.js / React
