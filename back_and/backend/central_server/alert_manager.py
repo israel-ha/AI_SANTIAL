@@ -39,10 +39,15 @@ class AlertManager:
     ):
         self._firebase   = firebase
         self._emit       = emit_fn
+        self._on_alert:  Optional[Callable] = None
         self._cooldowns: Dict[str, float] = {}
 
     def set_emit_fn(self, fn: Callable):
         self._emit = fn
+
+    def set_on_alert_fn(self, fn: Callable) -> None:
+        """Register a callback invoked with the AlertDocument each time an alert fires."""
+        self._on_alert = fn
 
     # ------------------------------------------------------------------
     # Public API
@@ -77,6 +82,9 @@ class AlertManager:
 
                 if self._emit:
                     self._emit("alert_new", alert.to_dict())
+
+                if self._on_alert:
+                    self._on_alert(alert)
 
     # ------------------------------------------------------------------
     # Internal

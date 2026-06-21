@@ -1,53 +1,97 @@
 """
-Restricted zone storage.
+Multi-zone storage.
 
-Holds a single polygon that the frontend operator can draw on the live feed.
-Points are stored in normalised [0, 1] coordinates so they are
-resolution-independent and scale correctly to any camera or display size.
+Holds multiple operator-drawn polygons, each with an id, a list of normalised
+[0, 1] points, and a riskLevel ('Low', 'Medium', 'High').
 
-Example payload from the frontend:
-    {"zone": [{"x": 0.1, "y": 0.2}, {"x": 0.5, "y": 0.2}, {"x": 0.4, "y": 0.8}]}
+Persisted in restricted_zone.json across server restarts.
 
-The JSON file persists across server restarts.
+Old single-zone format (flat list of {x, y} dicts) is auto-migrated to
+the new array-of-zones format on first load.
 """
 import json
 import os
+import uuid
 
 _ZONE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "restricted_zone.json")
 
-# In-memory cache — a list of {"x": float, "y": float} dicts in [0, 1] space.
-_zone: list = []
+# In-memory cache — list of {"id": str, "points": [{x, y}, ...], "riskLevel": str} dicts.
+_zones: list = []
 
 
 def load() -> list:
-    """Load the persisted zone from disk into the in-memory cache.
-    Call once at server startup."""
-    global _zone
-    if os.path.exists(_ZONE_FILE):
-        try:
-            with open(_ZONE_FILE) as f:
-                _zone = json.load(f)
-            print(f"[INFO] ZoneStore: loaded restricted zone ({len(_zone)} points) from disk.")
-        except Exception as exc:
-            print(f"[WARNING] ZoneStore: could not load zone file — {exc}")
-            _zone = []
-    else:
-        print("[INFO] ZoneStore: no restricted zone on disk — zone is empty.")
-    return _zone
+    """Load persisted zones from disk into the in-memory cache. Call once at startup."""
+    global _zones
+    if not os.path.exists(_ZONE_FILE):
+        print("[INFO] ZoneStore: no zone file on disk — starting empty.")
+        return _zones
 
-
-def save(points: list) -> None:
-    """Overwrite the zone with new points and persist to disk."""
-    global _zone
-    _zone = points
     try:
-        with open(_ZONE_FILE, "w") as f:
-            json.dump(points, f)
-        print(f"[INFO] ZoneStore: saved restricted zone ({len(points)} points).")
+        with open(_ZONE_FILE) as f:
+            data = json.load(f)
+
+        # Migrate old format: flat list of {x, y} points → single zone object
+        if data and isinstance(data, list) and data[0] and "x" in data[0]:
+            _zones = [{
+                "id":        f"zone_{uuid.uuid4().hex[:8]}",
+                "points":    data,
+                "riskLevel": "Medium",
+            }]
+            _persist()
+            print("[INFO] ZoneStore: migrated legacy single-zone to multi-zone format.")
+        else:
+            _zones = data if isinstance(data, list) else []
+            print(f"[INFO] ZoneStore: loaded {len(_zones)} zone(s) from disk.")
     except Exception as exc:
-        print(f"[WARNING] ZoneStore: could not save zone — {exc}")
+        print(f"[WARNING] ZoneStore: could not load zone file — {exc}")
+        _zones = []
+
+    return _zones
+
+
+def save(zones: list) -> None:
+    """Replace all zones and persist to disk.
+
+    Each zone is:  {"id": str, "points": [{x, y}], "riskLevel": "Low"|"Medium"|"High"}
+    """
+    global _zones
+    _zones = zones
+    _persist()
+    print(f"[INFO] ZoneStore: saved {len(zones)} zone(s).")
 
 
 def get() -> list:
-    """Return the current zone (list of normalised {x, y} dicts)."""
-    return _zone
+    """Return the current list of zone dicts."""
+    return _zones
+
+
+def add_or_update(zone: dict) -> None:
+    """Upsert a single zone by id and persist."""
+    global _zones
+    zone_id = zone.get("id")
+    for i, z in enumerate(_zones):
+        if z.get("id") == zone_id:
+            _zones[i] = zone
+            _persist()
+            return
+    _zones.append(zone)
+    _persist()
+
+
+def remove(zone_id: str) -> bool:
+    """Remove a zone by id. Returns True if found and removed."""
+    global _zones
+    before = len(_zones)
+    _zones = [z for z in _zones if z.get("id") != zone_id]
+    if len(_zones) < before:
+        _persist()
+        return True
+    return False
+
+
+def _persist() -> None:
+    try:
+        with open(_ZONE_FILE, "w") as f:
+            json.dump(_zones, f)
+    except Exception as exc:
+        print(f"[WARNING] ZoneStore: could not write zone file — {exc}")

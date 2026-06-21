@@ -46,7 +46,7 @@ def _point_in_polygon(cx: float, cy: float, poly: list) -> bool:
 class VideoWorker(threading.Thread):
     """Runs detection + the AI pipeline against one looping video source."""
 
-    def __init__(self, camera_id, source, detector, socketio, ingest_fn, annotate_fn, zone_fn, cache_fn):
+    def __init__(self, camera_id, source, detector, socketio, ingest_fn, annotate_fn, zone_fn, cache_fn, frame_hook=None):
         super().__init__(daemon=True, name=f"video-worker-{camera_id}")
         self.camera_id   = camera_id
         self.source      = source
@@ -56,6 +56,7 @@ class VideoWorker(threading.Thread):
         self.annotate_fn = annotate_fn
         self.zone_fn     = zone_fn
         self.cache_fn    = cache_fn
+        self.frame_hook  = frame_hook   # called with each emitted frame (for alert recording)
         self._stop       = threading.Event()
 
     def stop(self):
@@ -79,19 +80,27 @@ class VideoWorker(threading.Thread):
 
             self.detector.process_frame(frame)
 
-            # Determine which tracked persons are inside the restricted zone.
+            # Determine which tracked persons are inside any drawn zone.
+            # zone_fn returns [{id, points, riskLevel}] (multi-zone format).
             inside_zone_ids: set = set()
-            zone = self.zone_fn() or []
-            if zone:
-                fw, fh  = self.detector.frame_size
-                zone_px = [(p["x"] * fw, p["y"] * fh) for p in zone]
+            zones = self.zone_fn() or []
+            if zones:
+                fw, fh = self.detector.frame_size
+                # Build pixel-space polygon for every zone with ≥3 points.
+                all_polys = [
+                    [(p["x"] * fw, p["y"] * fh) for p in z.get("points", [])]
+                    for z in zones
+                    if len(z.get("points", [])) >= 3
+                ]
                 for pid, data in self.detector.tracked.items():
                     if not data.get("box_active"):
                         continue
                     x1, y1, x2, y2 = data["box"]
                     cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-                    if _point_in_polygon(cx, cy, zone_px):
-                        inside_zone_ids.add(pid)
+                    for poly in all_polys:
+                        if _point_in_polygon(cx, cy, poly):
+                            inside_zone_ids.add(pid)
+                            break
 
             now = time.time()
 
@@ -116,6 +125,11 @@ class VideoWorker(threading.Thread):
 
             # Annotate and emit at STREAM_FPS.
             if now - last_emit >= stream_interval:
+                if self.frame_hook:
+                    try:
+                        self.frame_hook(frame)
+                    except Exception:
+                        pass   # never let the recorder crash the live feed
                 cached    = self.cache_fn(self.camera_id)
                 annotated = self.annotate_fn(
                     frame,
@@ -140,12 +154,13 @@ class VideoWorker(threading.Thread):
 class VideoWorkerManager:
     """Owns the single active VideoWorker and switches between live/demo sources."""
 
-    def __init__(self, socketio, ingest_fn, annotate_fn, zone_fn, cache_fn):
+    def __init__(self, socketio, ingest_fn, annotate_fn, zone_fn, cache_fn, frame_hook=None):
         self._socketio    = socketio
         self._ingest_fn   = ingest_fn
         self._annotate_fn = annotate_fn
         self._zone_fn     = zone_fn
         self._cache_fn    = cache_fn
+        self._frame_hook  = frame_hook   # forwarded to each VideoWorker
         self._worker:    "VideoWorker | None" = None
         self._mode:      str  = "stopped"
         self._camera_id: str  = config.CAMERA_ID
@@ -192,6 +207,7 @@ class VideoWorkerManager:
             annotate_fn = self._annotate_fn,
             zone_fn     = self._zone_fn,
             cache_fn    = self._cache_fn,
+            frame_hook  = self._frame_hook,
         )
         worker.start()
 

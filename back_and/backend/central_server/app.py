@@ -44,6 +44,8 @@ from central_server.api.rules_api    import rules_bp, init_rules_api
 from central_server.api.cameras_api  import cameras_bp, init_cameras_api
 from central_server.api.stream_api   import register_socket_events
 from central_server.api.video_api    import video_bp, init_video_api
+from central_server.api.alerts_api   import alerts_bp, init_alerts_api
+from central_server.alert_recorder   import AlertRecorder
 
 # ---------------------------------------------------------------------------
 # Module-level singletons (shared across requests inside one process)
@@ -59,6 +61,10 @@ _firebase       = FirebaseClient(dry_run=False)
 _alerts         = AlertManager(_firebase)
 _known_cameras: set = set()   # tracks first-seen cameras for camera_status events
 
+# Alert video clip recorder — maintains a rolling frame buffer and saves
+# .mp4 clips to assets/alerts/ whenever the AlertManager fires an alert.
+_alert_recorder = AlertRecorder()
+
 # In-process video pipeline (Live = looping local file, Demo = Firebase Storage file).
 # Wired up fully once create_app() registers _annotate / process_tracking_payload
 # below; instantiated here so the api blueprint and /api/health can reference it.
@@ -68,6 +74,7 @@ _video_manager = VideoWorkerManager(
     annotate_fn    = lambda *a, **kw: _annotate(*a, **kw),
     zone_fn        = zone_store.get,
     cache_fn       = lambda camera_id: _annotation_cache.get(camera_id, {}),
+    frame_hook     = _alert_recorder.push_frame,
 )
 
 # Pending camera configs waiting to be delivered to the Edge Node via /ingest response.
@@ -235,7 +242,8 @@ def process_tracking_payload(camera_id: str, persons: list, frame_w: int, frame_
     # 2. Spatial risk evaluation — stateless, computes raw evidence score
     rules        = _store.get_rules(camera_id)
     risk_results = _spatial.evaluate(
-        persons, rules, frame_w, frame_h, global_ids, effective_times
+        persons, rules, frame_w, frame_h, global_ids, effective_times,
+        zones=zone_store.get(),
     )
 
     # 2.5 Dynamic Threat Memory — applies score decay, zone-exit penalty, and
@@ -258,6 +266,7 @@ def process_tracking_payload(camera_id: str, persons: list, frame_w: int, frame_
             min_dwell_seconds = r.min_dwell_seconds,
             zone_sensitivity  = r.zone_sensitivity,
             now               = pipeline_start,
+            zone_risk_level   = r.zone_risk_level,
         )
     _scoring.purge_stale(pipeline_start)
 
@@ -349,6 +358,17 @@ def create_app() -> Flask:
     # Inject socketio.emit into the alert manager so it can push alert_new events.
     _alerts.set_emit_fn(socketio.emit)
 
+    # Wire alert recorder: called once per dispatched alert (after cooldown check).
+    def _on_alert(alert):
+        score = alert.metrics.get("risk_score", 0) if isinstance(alert.metrics, dict) else 0
+        _alert_recorder.trigger(
+            alert_id        = alert.alert_id,
+            alert_type      = alert.alert_type,
+            score           = score,
+            camera_id       = alert.camera_id,
+        )
+    _alerts.set_on_alert_fn(_on_alert)
+
     # Load persisted restricted zone from disk.
     zone_store.load()
 
@@ -364,6 +384,9 @@ def create_app() -> Flask:
 
     init_video_api(_video_manager)
     app.register_blueprint(video_bp)
+
+    init_alerts_api(_alert_recorder)
+    app.register_blueprint(alerts_bp)
 
     # Socket.IO event handlers
     register_socket_events(socketio)
@@ -442,7 +465,7 @@ def create_app() -> Flask:
 
     @app.get("/api/restricted_zone")
     def get_restricted_zone():
-        return jsonify({"zone": zone_store.get()})
+        return jsonify({"zones": zone_store.get()})
 
     # ------------------------------------------------------------------
     # GET /api/stats
@@ -602,7 +625,8 @@ def _build_tracking_update(camera_id, timestamp, persons, risk_results, global_i
             "last_position":         person.last_position,
             "alert_types":           result.alert_types if result else [],
             "box":                   person.box,
-            "risk_score":            result.risk_score  if result else 0,
+            "risk_score":            result.risk_score       if result else 0,
+            "zone_risk_level":       result.zone_risk_level  if result else None,
             "scores":                (scores_map or {}).get(gid, {
                 "climbing_score": 0, "loitering_score": 0, "total_person_score": 0
             }),

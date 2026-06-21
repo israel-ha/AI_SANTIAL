@@ -6,6 +6,8 @@ Registered in app.py via:
     from central_server.api.stream_api import register_socket_events
     register_socket_events(socketio)
 """
+import uuid
+
 from flask_socketio import SocketIO
 
 from central_server import zone_store
@@ -27,19 +29,35 @@ def register_socket_events(socketio: SocketIO):
     @socketio.on("update_restricted_zone")
     def on_update_restricted_zone(data):
         """
-        Receive a new restricted zone polygon from the frontend.
+        Receive zone updates from the frontend.
 
-        Expected payload:
-            {"zone": [{"x": 0.1, "y": 0.2}, ...]}   (normalised [0,1] coords)
+        New multi-zone format (preferred):
+            {"zones": [{"id": "...", "points": [{x, y}], "riskLevel": "Low|Medium|High"}, ...]}
 
-        Saves the zone to disk and broadcasts restricted_zone_updated to all
-        clients so every connected frontend immediately reflects the change.
+        Legacy single-zone format (auto-migrated):
+            {"zone": [{"x": ..., "y": ...}, ...]}
+
+        Saves zones to disk and broadcasts restricted_zones_updated to all
+        connected clients so every frontend immediately reflects the change.
         """
-        points = data.get("zone", [])
-        zone_store.save(points)
-        socketio.emit("restricted_zone_updated", {"zone": points})
-        print(f"[INFO] Socket.IO: restricted zone updated ({len(points)} points).")
-        return {"status": "success", "message": "Restricted zone updated successfully"}
+        zones = data.get("zones")
+
+        if zones is None:
+            # Back-compat: old single-zone payload → wrap as one Medium zone
+            points = data.get("zone", [])
+            if points:
+                zones = [{
+                    "id":        f"zone_{uuid.uuid4().hex[:8]}",
+                    "points":    points,
+                    "riskLevel": "Medium",
+                }]
+            else:
+                zones = []
+
+        zone_store.save(zones)
+        socketio.emit("restricted_zones_updated", {"zones": zones})
+        print(f"[INFO] Socket.IO: zones updated ({len(zones)} zone(s)).")
+        return {"status": "success", "message": f"Zones updated ({len(zones)} zone(s))"}
 
     @socketio.on("disconnect")
     def on_disconnect():

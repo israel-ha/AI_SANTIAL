@@ -13,6 +13,21 @@ from typing import List, Optional, Dict, Any, Tuple
 # ---------------------------------------------------------------------------
 
 @dataclass
+class ZoneDefinition:
+    """An operator-drawn zone with an explicit risk level."""
+    id:         str
+    points:     List[dict]   # [{"x": float, "y": float}, ...]  normalised [0,1]
+    risk_level: str          # "Low" | "Medium" | "High"
+
+    def to_dict(self) -> dict:
+        return {
+            "id":        self.id,
+            "points":    self.points,
+            "riskLevel": self.risk_level,
+        }
+
+
+@dataclass
 class Point:
     """Normalized coordinate — both x and y are in the range [0.0, 1.0]."""
     x: float
@@ -150,6 +165,7 @@ class RiskResult:
     in_zone:             bool
     zone_sensitivity:    int = 0        # sensitivity_level of the triggered zone (0 = not in zone)
     min_dwell_seconds:   int = 30       # from triggered rule conditions (used by scoring engine)
+    zone_risk_level:     Optional[str] = None   # "Low" | "Medium" | "High" — from operator-drawn zones
 
 
 @dataclass

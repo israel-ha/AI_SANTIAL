@@ -6,6 +6,12 @@ Computes three decoupled scores as defined in API_CONTRACT.md §8:
   loitering_score:    0-100, dwell-time ratio × zone sensitivity multiplier (÷3)
   total_person_score: 0-100, weighted combination (40% climbing + 60% loitering)
 
+Hybrid zone-risk multipliers (applied after base KPI computation when the person
+is inside an operator-drawn zone from zone_store):
+  Low  → climbing_score × 1.2, loitering_score × 1.2
+  Medium → climbing_score × 1.5, loitering_score × 1.5
+  High   → both scores forced to 100 (instant alert)
+
 Evaluates three distinct alert trigger conditions (§4.2):
   CLIMBING  — climbing_score alone crossed its threshold
   LOITERING — loitering_score alone crossed its threshold
@@ -14,7 +20,7 @@ Evaluates three distinct alert trigger conditions (§4.2):
 
 Thresholds are defined in shared/config.py and can be tuned via environment variables.
 """
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from shared import config
 
@@ -34,8 +40,9 @@ class ScoringEngine:
         alert_types:       list,
         eff_time_seconds:  float,
         min_dwell_seconds: int,
-        zone_sensitivity:  int,   # 1-5; pass 0 if person is not inside a loitering zone
+        zone_sensitivity:  int,            # 1-5; pass 0 if person is not in a loitering zone
         now:               float,
+        zone_risk_level:   Optional[str] = None,  # "Low" | "Medium" | "High" from zone_store
     ) -> dict:
         """
         Compute KPI scores and determine which alert triggers are active.
@@ -44,8 +51,20 @@ class ScoringEngine:
           climbing_score, loitering_score, total_person_score  — integers 0-100
           triggers — list of (alert_type, trigger_type) tuples that are active this cycle
         """
-        climbing_score     = self._climb_score(global_id, alert_types, now)
-        loitering_score    = self._loiter_score(eff_time_seconds, min_dwell_seconds, zone_sensitivity)
+        climbing_score  = self._climb_score(global_id, alert_types, now)
+        loitering_score = self._loiter_score(eff_time_seconds, min_dwell_seconds, zone_sensitivity)
+
+        # Apply hybrid zone-risk multipliers when inside an operator-drawn zone.
+        if zone_risk_level == "High":
+            climbing_score  = 100
+            loitering_score = 100
+        elif zone_risk_level == "Medium":
+            climbing_score  = min(round(climbing_score  * 1.5), 100)
+            loitering_score = min(round(loitering_score * 1.5), 100)
+        elif zone_risk_level == "Low":
+            climbing_score  = min(round(climbing_score  * 1.2), 100)
+            loitering_score = min(round(loitering_score * 1.2), 100)
+
         total_person_score = round(0.4 * climbing_score + 0.6 * loitering_score)
         triggers           = self._evaluate_triggers(climbing_score, loitering_score, total_person_score)
 
