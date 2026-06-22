@@ -21,6 +21,7 @@ VideoWorkerManager owns the single active VideoWorker and switches between
 import base64
 import threading
 import time
+import uuid
 
 import cv2
 import numpy as np
@@ -90,21 +91,31 @@ def _draw_zones_cv(frame: np.ndarray, zones: list) -> np.ndarray:
 class VideoWorker(threading.Thread):
     """Runs detection + the AI pipeline against one looping video source."""
 
-    def __init__(self, camera_id, source, detector, socketio, ingest_fn, annotate_fn, zone_fn, cache_fn, frame_hook=None):
+    def __init__(self, camera_id, source, detector, socketio, ingest_fn, annotate_fn, zone_fn, cache_fn,
+                 run_id=None, active_run_id=None, frame_hook=None):
         super().__init__(daemon=True, name=f"video-worker-{camera_id}")
-        self.camera_id   = camera_id
-        self.source      = source
-        self.detector    = detector
-        self.socketio    = socketio
-        self.ingest_fn   = ingest_fn
-        self.annotate_fn = annotate_fn
-        self.zone_fn     = zone_fn
-        self.cache_fn    = cache_fn
-        self.frame_hook   = frame_hook   # called with each emitted frame (for alert recording)
-        self._stop_event  = threading.Event()
+        self.camera_id      = camera_id
+        self.source         = source
+        self.detector       = detector
+        self.socketio       = socketio
+        self.ingest_fn      = ingest_fn
+        self.annotate_fn    = annotate_fn
+        self.zone_fn        = zone_fn
+        self.cache_fn       = cache_fn
+        self.frame_hook     = frame_hook
+        self.run_id         = run_id            # unique epoch for this worker instance
+        self._active_run_id = active_run_id     # shared [run_id] ref from VideoWorkerManager
+        self._stop_event    = threading.Event()
 
     def stop(self):
         self._stop_event.set()
+
+    def _superseded(self) -> bool:
+        """True when the manager has started a newer worker — this instance is a zombie."""
+        return (
+            self._active_run_id is not None and
+            self.run_id != self._active_run_id[0]
+        )
 
     def run(self):
         # ──────────────────────────────────────────────────────────────────────
@@ -121,7 +132,7 @@ class VideoWorker(threading.Thread):
         # ── YOLO worker — runs at full CPU speed, never blocks the stream ──
         def _yolo_worker():
             last_seq = -1
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and not self._superseded():
                 with _frame_lock:
                     seq   = _frame_seq[0]
                     frame = _latest_frame[0]
@@ -143,7 +154,7 @@ class VideoWorker(threading.Thread):
         _ingest_event = threading.Event()
 
         def _ingest_worker():
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and not self._superseded():
                 if not _ingest_event.wait(timeout=0.1):
                     continue
                 _ingest_event.clear()
@@ -171,97 +182,111 @@ class VideoWorker(threading.Thread):
         print(
             f"[INFO] VideoWorker[{self.camera_id}]: started — "
             f"stream={config.STREAM_FPS} fps  yolo=continuous background  "
-            f"src={self.source.fps:.1f} fps"
+            f"src={self.source.fps:.1f} fps  run_id={self.run_id}"
         )
 
-        while not self._stop_event.is_set():
-            t0 = time.time()
+        try:
+            while not self._stop_event.is_set() and not self._superseded():
+                t0 = time.time()
 
-            # ── 1. Read next frame from source ─────────────────────────────
-            frame = self.source.read()
-            if frame is None:
-                time.sleep(0.02)
-                continue
+                # ── 1. Read next frame from source ─────────────────────────────
+                frame = self.source.read()
+                if frame is None:
+                    time.sleep(0.02)
+                    continue
 
-            # Share with YOLO thread (atomic under CPython GIL + Lock)
-            with _frame_lock:
-                _latest_frame[0] = frame
-                _frame_seq[0]   += 1
+                # Share with YOLO thread (atomic under CPython GIL + Lock)
+                with _frame_lock:
+                    _latest_frame[0] = frame
+                    _frame_seq[0]   += 1
 
-            now = time.time()
+                now = time.time()
 
-            # ── 2. Zone containment (reads detector.tracked — GIL-safe) ────
-            # detector.tracked is updated by the YOLO thread; dict access is
-            # serialised by the GIL so no additional lock is needed here.
-            inside_zone_ids: set = set()
-            zones = self.zone_fn() or []
-            if zones:
-                fw, fh = self.detector.frame_size
-                all_polys = [
-                    [(p["x"] * fw, p["y"] * fh) for p in z.get("points", [])]
-                    for z in zones
-                    if len(z.get("points", [])) >= 3
-                ]
-                for pid, d in list(self.detector.tracked.items()):
-                    if not d.get("box_active"):
-                        continue
-                    x1, y1, x2, y2 = d["box"]
-                    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-                    for poly in all_polys:
-                        if _point_in_polygon(cx, cy, poly):
-                            inside_zone_ids.add(pid)
-                            break
+                # ── 2. Zone containment (reads detector.tracked — GIL-safe) ────
+                # detector.tracked is updated by the YOLO thread; dict access is
+                # serialised by the GIL so no additional lock is needed here.
+                inside_zone_ids: set = set()
+                zones = self.zone_fn() or []
+                if zones:
+                    fw, fh = self.detector.frame_size
+                    all_polys = [
+                        [(p["x"] * fw, p["y"] * fh) for p in z.get("points", [])]
+                        for z in zones
+                        if len(z.get("points", [])) >= 3
+                    ]
+                    for pid, d in list(self.detector.tracked.items()):
+                        if not d.get("box_active"):
+                            continue
+                        x1, y1, x2, y2 = d["box"]
+                        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                        for poly in all_polys:
+                            if _point_in_polygon(cx, cy, poly):
+                                inside_zone_ids.add(pid)
+                                break
 
-            # ── 3. Queue AI ingest payload (non-blocking) ──────────────────
-            if now - last_send >= config.SEND_INTERVAL_SECONDS:
-                payload = build_payload(
-                    detector        = self.detector,
-                    camera_id       = self.camera_id,
-                    frame           = None,
-                    include_frame   = False,
-                    inside_zone_ids = inside_zone_ids,
+                # ── 3. Queue AI ingest payload (non-blocking) ──────────────────
+                if now - last_send >= config.SEND_INTERVAL_SECONDS:
+                    payload = build_payload(
+                        detector        = self.detector,
+                        camera_id       = self.camera_id,
+                        frame           = None,
+                        include_frame   = False,
+                        inside_zone_ids = inside_zone_ids,
+                    )
+                    if payload.persons:
+                        with _ingest_lock:
+                            _ingest_data[0] = (
+                                self.camera_id, payload.persons,
+                                payload.frame_width, payload.frame_height, payload.timestamp,
+                            )
+                        _ingest_event.set()
+                    last_send = now
+
+                # ── 4. Annotate + encode + emit ────────────────────────────────
+                # annotate_fn reads from the cache written by the ingest thread;
+                # it is a fast OpenCV drawing call that never blocks on YOLO.
+                cached    = self.cache_fn(self.camera_id)
+                annotated = self.annotate_fn(
+                    frame,
+                    cached.get("risk_results",    []),
+                    cached.get("global_ids",      {}),
+                    cached.get("effective_times", {}),
+                    cached.get("person_map",      {}),
                 )
-                if payload.persons:
-                    with _ingest_lock:
-                        _ingest_data[0] = (
-                            self.camera_id, payload.persons,
-                            payload.frame_width, payload.frame_height, payload.timestamp,
-                        )
-                    _ingest_event.set()
-                last_send = now
+                if zones:
+                    annotated = _draw_zones_cv(annotated, zones)
+                if self.frame_hook:
+                    try:
+                        self.frame_hook(annotated)
+                    except Exception:
+                        pass   # never let the recorder crash the stream
 
-            # ── 4. Annotate + encode + emit ────────────────────────────────
-            # annotate_fn reads from the cache written by the ingest thread;
-            # it is a fast OpenCV drawing call that never blocks on YOLO.
-            cached    = self.cache_fn(self.camera_id)
-            annotated = self.annotate_fn(
-                frame,
-                cached.get("risk_results",    []),
-                cached.get("global_ids",      {}),
-                cached.get("effective_times", {}),
-                cached.get("person_map",      {}),
+                # Zombie / stop guard — last checkpoint before touching the socket.
+                # Catches the exact race where stop() fired while this thread was
+                # sleeping in step 5 and it has just woken up ready to emit.
+                if self._stop_event.is_set() or self._superseded():
+                    break
+
+                _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                out_b64 = base64.b64encode(buf).decode("utf-8")
+                self.socketio.emit("processed_frame", f"data:image/jpeg;base64,{out_b64}")
+
+                # ── 5. Strict pace at STREAM_FPS ───────────────────────────────
+                elapsed    = time.time() - t0
+                sleep_time = stream_interval - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+        finally:
+            # Guaranteed cleanup even if the loop exits via exception or epoch mismatch.
+            # Releasing the source cuts off its frame supply immediately.
+            yolo_thread.join(timeout=2)
+            ingest_thread.join(timeout=2)
+            self.source.release()
+            print(
+                f"[INFO] VideoWorker[{self.camera_id}]: stopped "
+                f"(run_id={self.run_id}  superseded={self._superseded()})."
             )
-            if zones:
-                annotated = _draw_zones_cv(annotated, zones)
-            if self.frame_hook:
-                try:
-                    self.frame_hook(annotated)
-                except Exception:
-                    pass   # never let the recorder crash the stream
-            _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 65])
-            out_b64 = base64.b64encode(buf).decode("utf-8")
-            self.socketio.emit("processed_frame", f"data:image/jpeg;base64,{out_b64}")
-
-            # ── 5. Strict pace at STREAM_FPS ───────────────────────────────
-            elapsed    = time.time() - t0
-            sleep_time = stream_interval - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-        yolo_thread.join(timeout=2)
-        ingest_thread.join(timeout=2)
-        self.source.release()
-        print(f"[INFO] VideoWorker[{self.camera_id}]: stopped.")
 
 
 class VideoWorkerManager:
@@ -281,7 +306,8 @@ class VideoWorkerManager:
         self._camera_id: str  = config.CAMERA_ID
         self._source_desc: str = ""
         self._filename:  "str | None" = None
-        self._switch_lock = threading.Lock()   # prevents overlapping switch() calls
+        self._switch_lock   = threading.Lock()   # prevents overlapping switch() calls
+        self._active_run_id = [None]              # mutable epoch shared with the current VideoWorker
 
     def switch(self, mode: str, camera_id: str = config.CAMERA_ID, filename: str = None) -> None:
         """Stop the current worker (if any) and start a new one for `mode`.
@@ -328,17 +354,25 @@ class VideoWorkerManager:
         if self._clear_cache_fn is not None:
             self._clear_cache_fn(camera_id)
 
+        # Advance the epoch BEFORE starting the new worker.
+        # Any zombie thread that survived the join timeout will call _superseded(),
+        # see a run_id mismatch, and self-terminate before its next emit().
+        new_run_id = uuid.uuid4()
+        self._active_run_id[0] = new_run_id
+
         detector = Detector(model=model_manager.get_model())
         worker = VideoWorker(
-            camera_id   = camera_id,
-            source      = source,
-            detector    = detector,
-            socketio    = self._socketio,
-            ingest_fn   = self._ingest_fn,
-            annotate_fn = self._annotate_fn,
-            zone_fn     = self._zone_fn,
-            cache_fn    = self._cache_fn,
-            frame_hook  = self._frame_hook,
+            camera_id      = camera_id,
+            source         = source,
+            detector       = detector,
+            socketio       = self._socketio,
+            ingest_fn      = self._ingest_fn,
+            annotate_fn    = self._annotate_fn,
+            zone_fn        = self._zone_fn,
+            cache_fn       = self._cache_fn,
+            run_id         = new_run_id,
+            active_run_id  = self._active_run_id,
+            frame_hook     = self._frame_hook,
         )
         worker.start()
 
