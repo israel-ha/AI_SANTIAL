@@ -323,7 +323,7 @@ class SpatialEngine:
             descends or pauses: tail_net_rise goes to 0, disabling the alert.
         """
         positions = person.positions
-        if len(positions) < 5:
+        if len(positions) < 8:   # need at least one full Gate 2 tail (8 frames ≈ 4 s at 2 inf/s)
             return False
 
         # ── Gate 1: overall net rise ───────────────────────────────────────

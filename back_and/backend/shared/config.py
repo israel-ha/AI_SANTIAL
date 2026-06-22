@@ -148,8 +148,8 @@ ALERT_COOLDOWN_SECONDS = 60     # minimum gap between repeated alerts for the sa
 #   LOITERING — fires when loitering_score reaches this value (matches RISK_ALERT_THRESHOLD)
 #   COMBINED  — fires when total_person_score reaches this value AND neither individual
 #               threshold is met (partial overlap of climbing + loitering activity)
-CLIMBING_ALERT_THRESHOLD  = int(os.environ.get("CLIMBING_ALERT_THRESHOLD",  100))
-LOITERING_ALERT_THRESHOLD = int(os.environ.get("LOITERING_ALERT_THRESHOLD", 100))
+CLIMBING_ALERT_THRESHOLD  = int(os.environ.get("CLIMBING_ALERT_THRESHOLD",   50))  # 2 events × 25 pts
+LOITERING_ALERT_THRESHOLD = int(os.environ.get("LOITERING_ALERT_THRESHOLD",  70))  # matches RISK_ALERT_THRESHOLD
 COMBINED_ALERT_THRESHOLD  = int(os.environ.get("COMBINED_ALERT_THRESHOLD",   50))
 
 # ---------------------------------------------------------------------------

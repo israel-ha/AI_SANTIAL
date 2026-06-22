@@ -149,10 +149,13 @@ class ThreatMemory:
                 now        = now,
             )
 
+            # Kinematic alerts (climbing) are independent of zone score — preserve them
+            # even when the spatial/zone score falls below the alert threshold.
+            _KINEMATIC = {"climbing"}
             result.risk_score = int(round(adjusted))
             result.in_zone    = adjusted >= config.RISK_ALERT_THRESHOLD
             if not result.in_zone:
-                result.alert_types = []
+                result.alert_types = [a for a in result.alert_types if a in _KINEMATIC]
 
         return risk_results
 
