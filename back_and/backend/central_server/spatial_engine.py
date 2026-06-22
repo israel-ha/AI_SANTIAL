@@ -85,6 +85,25 @@ def _raw_to_pixels(points: list, fw: int, fh: int) -> List[Tuple[float, float]]:
     return [(p["x"] * fw, p["y"] * fh) for p in points]
 
 
+def _near_any_zone(cx: float, cy: float, px_zones: list, buffer: float = 80.0) -> bool:
+    """True if (cx, cy) is within `buffer` pixels of any drawn zone's bounding box.
+
+    Used to gate climbing detection to subjects near the fence/gate area when
+    the operator has drawn zones.  A bounding-box expansion is deliberately
+    simple: it is fast, explainable, and covers every convex zone shape well.
+    """
+    for z in px_zones:
+        pts = z.get("pixels", [])
+        if len(pts) < 3:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        if (min(xs) - buffer <= cx <= max(xs) + buffer and
+                min(ys) - buffer <= cy <= max(ys) + buffer):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -195,8 +214,15 @@ class SpatialEngine:
                     alert_types = []
 
             # Kinematic climbing detection — fires ONLY on Y-axis displacement evidence.
-            # Runs after all zone/rule logic so it is structurally independent.
-            if self._is_climbing(person) and "climbing" not in alert_types:
+            # Condition A (spatial gate): if the operator has drawn any zones, only
+            # subjects within CLIMB_PROXIMITY_PX of a zone bounding box are checked.
+            # This eliminates false positives from subjects far from the fence.
+            # If no zones are drawn the gate is skipped and climbing fires globally.
+            # This check is INDEPENDENT of whether the person triggered intrusion —
+            # the two alerts have completely separate trigger paths.
+            CLIMB_PROXIMITY_PX = 80.0
+            near_fence = not px_zones or _near_any_zone(cx, cy, px_zones, CLIMB_PROXIMITY_PX)
+            if near_fence and self._is_climbing(person) and "climbing" not in alert_types:
                 alert_types = list(alert_types) + ["climbing"]
 
             in_zone = final_score >= config.RISK_ALERT_THRESHOLD
@@ -264,41 +290,77 @@ class SpatialEngine:
     @staticmethod
     def _is_climbing(person) -> bool:
         """
-        Detect climbing via net vertical displacement over the last 20 inference
-        positions (~10 s of real time at the YOLO thread's 2-inferences/sec cadence
-        with YOLO_SKIP_N=6 on a 12-fps stream).
+        Three-gate climbing state machine.
 
-        Uses a pure net-rise test — NO directional-consistency gate.
-        A consistency gate was tried but the frame-skipping (1-in-6) + YOLO bbox
-        jitter produced enough noisy pairs to keep the ratio below 60 % even for
-        genuine climbers, blocking real events. The false-positive risk it guarded
-        against (zone-entry misclassified as climbing) is now prevented at the
-        rule-evaluation level (zone-type rules always emit "intrusion", never
-        "climbing"), so the gate is no longer needed.
+        Real-time cadence context
+        ─────────────────────────
+        YOLO_SKIP_N=6 on a 12-fps stream → 2 YOLO inferences / second.
+        Each entry in person.positions is one inference centroid.
+        • positions[-20:] ≈ 10 s of real history  (net-rise window)
+        • positions[-8:]  ≈  4 s of recent motion (streak + velocity window)
 
-        In image coordinates Y increases downward, so moving upward means Y *decreases*:
-            net_rise = oldest_y − newest_y   →  positive = subject rose in the frame
+        Image-coordinate convention
+        ───────────────────────────
+        Y increases DOWNWARD.  Climbing UP means Y DECREASES over time.
+            net_rise = oldest_y − newest_y  →  positive = subject rose in the frame
 
-        20-pixel threshold over a 10-second window: enough to reject drift from
-        diagonal walking (typically < 10 px per second), but trivially exceeded
-        by actual fence-climbing (typically 30-100 px per second).
+        Gate 1 — Net rise (10-second window)
+            net_rise >= 20 px over the last 20 inference frames.
+            Rejects subjects whose overall position is flat (pacing, walking
+            horizontally, standing still with bbox jitter).
+
+        Gate 2 — Sustained consecutive upward streak (4-second tail)
+            The longest unbroken run of upward-moving consecutive centroid pairs
+            within the last 8 inference frames must reach MIN_CONSECUTIVE (= 3).
+            Eliminates isolated jitter bounces: pacing typically produces streaks
+            of 0–2 before a reversal, while real climbing produces 4–8+.
+
+        Gate 3 — Vertical velocity (4-second tail)
+            Average Y-decrease per inference frame across the 8-frame tail must
+            reach MIN_VELOCITY (= 3 px/frame = ~6 px/s at 2 inf/s).
+            Pacing near the gate causes ≤ 1–2 px/frame drift; actual climbing
+            produces 10–50 px/frame.  This gate self-resets when the subject
+            descends or pauses: tail_net_rise goes to 0, disabling the alert.
         """
         positions = person.positions
         if len(positions) < 5:
             return False
 
-        window   = positions[-20:]   # last 20 inference frames ≈ 10 s of real time
-        oldest_y = window[0][1]
-        newest_y = window[-1][1]
-        net_rise = oldest_y - newest_y   # positive → subject rose in the frame
+        # ── Gate 1: overall net rise ───────────────────────────────────────
+        window   = positions[-20:]
+        net_rise = window[0][1] - window[-1][1]   # positive → rose
 
-        result = net_rise >= 20
+        # ── Gate 2: consecutive upward streak in recent tail ──────────────
+        MIN_CONSECUTIVE = 3
+        tail = positions[-8:]
+        consecutive_ups = 0
+        max_consecutive = 0
+        for i in range(1, len(tail)):
+            if tail[i][1] < tail[i - 1][1]:       # y decreased → moved up
+                consecutive_ups += 1
+                if consecutive_ups > max_consecutive:
+                    max_consecutive = consecutive_ups
+            else:
+                consecutive_ups = 0                # streak broken
 
-        # ── DEBUG: print every ingest cycle so we can see the live signal ─
+        # ── Gate 3: average vertical velocity in tail ──────────────────────
+        MIN_VELOCITY = 3.0   # px per inference frame
+        tail_net_rise = tail[0][1] - tail[-1][1]  # positive if net-upward in tail
+        avg_velocity  = tail_net_rise / max(len(tail) - 1, 1)
+
+        result = (
+            net_rise        >= 20
+            and max_consecutive >= MIN_CONSECUTIVE
+            and avg_velocity    >= MIN_VELOCITY
+        )
+
+        # ── DEBUG console output ───────────────────────────────────────────
         print(
-            f"[CLIMB-DEBUG] pid={person.person_id} | "
-            f"pos_count={len(positions)} | window={len(window)} | "
-            f"net_rise={net_rise:.1f}px | climbing={result}"
+            f"[CLIMB-DEBUG] Subject {person.person_id} | "
+            f"Rise: {net_rise:.1f} | "
+            f"ConsecutiveUps: {max_consecutive} | "
+            f"Velocity: {avg_velocity:.1f}px/f | "
+            f"ClimbingStatus: {result}"
         )
 
         return result
