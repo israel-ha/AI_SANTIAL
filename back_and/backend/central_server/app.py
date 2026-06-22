@@ -4,25 +4,24 @@ Central Server — Flask + Socket.IO application factory.
 Responsibilities:
   - Expose POST /ingest  (called by the Edge Node every second)
   - Run Re-ID, Spatial Risk Engine, Alert Manager on each payload
-  - Annotate the received frame and emit it as processed_frame via Socket.IO
+  - Annotate the received frame and push it to frame_buffer for MJPEG streaming
   - Emit tracking_update with per-person risk scores and alert types
   - Serve the REST API for rule management (/api/rules)
   - Serve GET /api/health for monitoring
+  - Serve GET /api/stream.mjpeg — raw HTTP MJPEG stream (replaces Socket.IO processed_frame)
 
 Socket.IO events emitted (as defined in API_CONTRACT.md):
-  processed_frame   → base64 JPEG data URI
   tracking_update   → {camera_id, timestamp, persons: [...]}
   alert_new         → AlertDocument dict
   camera_status     → {camera_id, status, timestamp}
 """
-import base64
 import collections
 import time
 from datetime import datetime, timezone, timedelta
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
@@ -37,7 +36,7 @@ from central_server.rules_store    import RulesStore
 from central_server.camera_store   import CameraStore
 from central_server.firebase_client import FirebaseClient
 from central_server.alert_manager  import AlertManager
-from central_server import zone_store
+from central_server import frame_buffer, zone_store
 from central_server import model_manager
 from central_server.video_worker     import VideoWorkerManager
 from central_server.api.rules_api    import rules_bp, init_rules_api
@@ -429,7 +428,7 @@ def create_app() -> Flask:
     #
     # Accepts a raw JPEG body (Content-Type: image/jpeg).
     # Annotates the frame with the latest cached AI state from /ingest,
-    # then emits processed_frame to all connected frontend clients.
+    # then pushes it to frame_buffer for delivery via /api/stream.mjpeg.
     # This endpoint does NO AI work — it is intentionally lightweight.
     # ------------------------------------------------------------------
 
@@ -454,10 +453,40 @@ def create_app() -> Flask:
             cached.get("person_map",      {}),
         )
 
-        _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
-        out_b64 = base64.b64encode(buf).decode("utf-8")
-        socketio.emit("processed_frame", f"data:image/jpeg;base64,{out_b64}")
+        _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        frame_buffer.push(buf.tobytes())
         return "", 204
+
+    # ------------------------------------------------------------------
+    # GET /api/stream.mjpeg
+    #
+    # Delivers an HTTP MJPEG stream — a persistent HTTP response whose body
+    # is a sequence of JPEG frames separated by multipart boundaries.
+    # The browser decodes each part natively as it arrives, so the frontend
+    # only needs an <img src="/api/stream.mjpeg"> tag.
+    #
+    # This avoids all Socket.IO/WebSocket overhead: no base64 encoding (+33%),
+    # no WebSocket framing, no Azure proxy buffering, and correct HTTP
+    # backpressure — the generator simply blocks when the client is slow.
+    # ------------------------------------------------------------------
+
+    _MJPEG_BOUNDARY = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+
+    @app.get("/api/stream.mjpeg")
+    def stream_mjpeg():
+        def _generate():
+            prev: bytes = b""
+            while True:
+                cur = frame_buffer.latest()
+                if cur and cur is not prev:
+                    prev = cur
+                    yield _MJPEG_BOUNDARY + cur + b"\r\n"
+                time.sleep(0.033)   # poll at ~30 fps; actual emit rate is capped by the VideoWorker
+
+        return Response(
+            _generate(),
+            mimetype="multipart/x-mixed-replace; boundary=frame",
+        )
 
     # ------------------------------------------------------------------
     # GET /api/restricted_zone

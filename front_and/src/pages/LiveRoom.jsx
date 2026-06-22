@@ -8,6 +8,7 @@ import { database } from '../firebase';
 import { ref, onChildAdded } from 'firebase/database';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000';
+const MJPEG_URL  = `${SERVER_URL}/api/stream.mjpeg`;
 
 const ZONE_COLORS = {
   Low:    { fill: 'rgba(234, 179, 8, 0.15)',  stroke: '#eab308' },
@@ -33,7 +34,6 @@ const LiveRoom = () => {
   const videoContainerRef = useRef(null);
   const prevPersonsRef    = useRef({});   // gid → { zone_risk_level, scores, in_frame }
 
-  const [frameSrc, setFrameSrc]               = useState('');
   const [restrictedZones, setRestrictedZones] = useState([]);
   const [videoMode, setVideoMode]             = useState(null); // 'live' | 'demo' | null
   const [trackingPersons, setTrackingPersons] = useState([]);
@@ -65,11 +65,6 @@ const LiveRoom = () => {
     // Workflow 1 – subscribe to the camera stream on connect
     socketRef.current.on('connect', () => {
       socketRef.current.emit('subscribe_camera', { camera_id: 'CAM_1001' });
-    });
-
-    // Workflow 1 – update the <img> with each incoming annotated frame
-    socketRef.current.on('processed_frame', (dataUri) => {
-      setFrameSrc(dataUri);
     });
 
     // Workflow 2 – receive the confirmed zones broadcast from the server
@@ -246,7 +241,7 @@ const LiveRoom = () => {
         >
           <img
             ref={imgRef}
-            src={frameSrc}
+            src={MJPEG_URL}
             className="w-full h-full object-contain"
             alt="Live camera stream"
           />

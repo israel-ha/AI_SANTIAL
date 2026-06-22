@@ -11,14 +11,12 @@ thread:
   2. detector.process_frame(frame)            # YOLO every N frames
   3. every SEND_INTERVAL_SECONDS: build a TrackingPayload and call ingest_fn(...)
      directly (no HTTP) — this runs the full Re-ID/scoring/alert pipeline
-  4. annotate the frame using the cached annotation state and emit
-     'processed_frame' via Socket.IO
+  4. annotate the frame and push it to frame_buffer for MJPEG streaming
   5. sleep to pace the loop to STREAM_FPS
 
 VideoWorkerManager owns the single active VideoWorker and switches between
 "live" (LoopingFileSource) and "demo" (DemoVideoSource) modes.
 """
-import base64
 import threading
 import time
 import uuid
@@ -27,7 +25,7 @@ import cv2
 import numpy as np
 
 from shared import config
-from central_server import model_manager
+from central_server import frame_buffer, model_manager
 from central_server.video_sources import LoopingFileSource, DemoVideoSource
 from edge_node.detector import Detector
 from edge_node.payload_builder import build_payload
@@ -91,13 +89,12 @@ def _draw_zones_cv(frame: np.ndarray, zones: list) -> np.ndarray:
 class VideoWorker(threading.Thread):
     """Runs detection + the AI pipeline against one looping video source."""
 
-    def __init__(self, camera_id, source, detector, socketio, ingest_fn, annotate_fn, zone_fn, cache_fn,
+    def __init__(self, camera_id, source, detector, ingest_fn, annotate_fn, zone_fn, cache_fn,
                  run_id=None, active_run_id=None, frame_hook=None):
         super().__init__(daemon=True, name=f"video-worker-{camera_id}")
         self.camera_id      = camera_id
         self.source         = source
         self.detector       = detector
-        self.socketio       = socketio
         self.ingest_fn      = ingest_fn
         self.annotate_fn    = annotate_fn
         self.zone_fn        = zone_fn
@@ -282,9 +279,8 @@ class VideoWorker(threading.Thread):
                         interpolation=cv2.INTER_LINEAR,
                     )
 
-                _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 60])
-                out_b64 = base64.b64encode(buf).decode("utf-8")
-                self.socketio.emit("processed_frame", f"data:image/jpeg;base64,{out_b64}")
+                _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                frame_buffer.push(buf.tobytes())
 
                 # ── 5. Strict pace at STREAM_FPS ───────────────────────────────
                 elapsed    = time.time() - t0
@@ -380,7 +376,6 @@ class VideoWorkerManager:
             camera_id      = camera_id,
             source         = source,
             detector       = detector,
-            socketio       = self._socketio,
             ingest_fn      = self._ingest_fn,
             annotate_fn    = self._annotate_fn,
             zone_fn        = self._zone_fn,
