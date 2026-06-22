@@ -1,88 +1,91 @@
-import React, { useRef, useEffect } from 'react';
-import { Target, ShieldAlert, Activity, TrendingUp, Clock, Zap, AlertTriangle, Users } from 'lucide-react';
+import React from 'react';
+import { Target, ShieldAlert, Clock, Zap, AlertTriangle, TrendingUp, Users } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
-// Color helpers  (avoid Tailwind JIT purge by using inline styles for dynamic values)
+// Color helpers
 // ---------------------------------------------------------------------------
 
 const scoreColors = (v) => {
-  if (v >= 80) return { bar: '#ef4444', text: '#f87171', glow: '0 0 12px rgba(239,68,68,0.55)', ring: 'rgba(239,68,68,0.15)' };
-  if (v >= 60) return { bar: '#f97316', text: '#fb923c', glow: '0 0 8px rgba(249,115,22,0.45)', ring: 'rgba(249,115,22,0.10)' };
-  if (v >= 40) return { bar: '#eab308', text: '#facc15', glow: 'none', ring: 'rgba(234,179,8,0.08)' };
-  return         { bar: '#10b981', text: '#34d399', glow: 'none', ring: 'transparent' };
+  if (v >= 80) return { bar: '#ef4444', text: '#f87171', glow: '0 0 10px rgba(239,68,68,0.5)',  ring: 'rgba(239,68,68,0.10)' };
+  if (v >= 60) return { bar: '#f97316', text: '#fb923c', glow: '0 0 8px rgba(249,115,22,0.4)',  ring: 'rgba(249,115,22,0.08)' };
+  if (v >= 40) return { bar: '#eab308', text: '#facc15', glow: 'none',                           ring: 'rgba(234,179,8,0.06)'  };
+  return               { bar: '#334155', text: '#475569', glow: 'none',                           ring: 'transparent'           };
 };
 
 const ZONE_META = {
-  Low:    { bg: 'rgba(234,179,8,0.08)',   border: '#78350f', text: '#fbbf24', badge: '#854d0e', mult: '×1.2',          label: 'Low Risk Zone'    },
-  Medium: { bg: 'rgba(249,115,22,0.10)',  border: '#9a3412', text: '#fb923c', badge: '#9a3412', mult: '×1.5',          label: 'Medium Risk Zone' },
-  High:   { bg: 'rgba(239,68,68,0.12)',   border: '#7f1d1d', text: '#f87171', badge: '#991b1b', mult: 'INSTANT ALERT', label: 'HIGH — No-Go Zone' },
-};
-
-const LOG_STYLE = {
-  critical: { dot: '#ef4444', text: '#fca5a5', dim: 'rgba(239,68,68,0.08)' },
-  warning:  { dot: '#fb923c', text: '#fdba74', dim: 'rgba(249,115,22,0.06)' },
-  info:     { dot: '#64748b', text: '#94a3b8', dim: 'transparent'           },
+  Low:    { bg: 'rgba(234,179,8,0.07)',   border: '#78350f40', text: '#fbbf24', badge: '#854d0e', mult: '×1.2',          label: 'Low Risk Zone'    },
+  Medium: { bg: 'rgba(249,115,22,0.09)',  border: '#9a341240', text: '#fb923c', badge: '#9a3412', mult: '×1.5',          label: 'Medium Risk Zone' },
+  High:   { bg: 'rgba(239,68,68,0.11)',   border: '#7f1d1d60', text: '#f87171', badge: '#991b1b', mult: 'INSTANT ALERT', label: 'HIGH — No-Go Zone' },
 };
 
 // ---------------------------------------------------------------------------
-// Sub-components
+// ScoreBar — heavily muted when idle (value = 0), animates to threat colors
 // ---------------------------------------------------------------------------
 
-const ScoreBar = ({ label, value, icon: Icon, isBold }) => {
-  const c     = scoreColors(value);
-  const fired = value >= 70;
+const ScoreBar = ({ label, value, icon: Icon }) => {
+  const idle = value === 0;
+  const c    = scoreColors(value);
 
   return (
     <div
-      className="rounded-xl p-3 transition-all duration-500"
-      style={{ background: c.ring, border: `1px solid ${fired ? 'rgba(100,116,139,0.3)' : 'rgba(30,41,59,0.8)'}` }}
+      className="rounded-lg px-3 py-2.5 transition-all duration-500"
+      style={{
+        background: idle ? 'transparent' : c.ring,
+        border:     `1px solid ${idle ? 'rgba(30,41,59,0.6)' : 'rgba(100,116,139,0.25)'}`,
+        opacity:    idle ? 0.4 : 1,
+      }}
     >
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-1.5">
-          <Icon size={12} style={{ color: c.text }} />
-          <span className={`text-xs ${isBold ? 'font-semibold text-slate-200' : 'text-slate-400'}`}>
-            {label}
-          </span>
+          <Icon size={11} style={{ color: idle ? '#334155' : c.text }} />
+          <span className="text-[11px] text-slate-500">{label}</span>
         </div>
-        <div className="flex items-center gap-1.5">
-          {fired && <AlertTriangle size={10} className="text-red-400 animate-pulse" />}
+        <div className="flex items-center gap-1">
+          {value >= 70 && !idle && (
+            <AlertTriangle size={10} className="text-red-400 animate-pulse" />
+          )}
           <span
-            className="text-sm font-bold tabular-nums transition-all duration-500"
-            style={{ color: c.text }}
+            className="text-xs font-bold tabular-nums transition-all duration-500"
+            style={{ color: idle ? '#334155' : c.text }}
           >
             {value}
           </span>
-          <span className="text-[10px] text-slate-600">/100</span>
+          <span className="text-[10px] text-slate-700">/100</span>
         </div>
       </div>
 
-      <div className="h-2 bg-slate-900 rounded-full overflow-hidden">
-        <div
-          className="h-full rounded-full transition-all duration-700 ease-out"
-          style={{ width: `${value}%`, background: c.bar, boxShadow: c.glow }}
-        />
+      <div className="h-1.5 bg-slate-900 rounded-full overflow-hidden">
+        {!idle && (
+          <div
+            className="h-full rounded-full transition-all duration-700 ease-out"
+            style={{ width: `${value}%`, background: c.bar, boxShadow: c.glow }}
+          />
+        )}
       </div>
     </div>
   );
 };
 
+// ---------------------------------------------------------------------------
+// ZoneBadge
+// ---------------------------------------------------------------------------
+
 const ZoneBadge = ({ level }) => {
   const m = ZONE_META[level];
   if (!m) return null;
-  const isHigh = level === 'High';
 
   return (
     <div
-      className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold ${isHigh ? 'animate-pulse' : ''}`}
+      className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold ${level === 'High' ? 'animate-pulse' : ''}`}
       style={{ background: m.bg, border: `1px solid ${m.border}`, color: m.text }}
     >
       <div className="flex items-center gap-1.5">
-        <ShieldAlert size={12} />
+        <ShieldAlert size={11} />
         <span>{m.label}</span>
       </div>
       <span
-        className="px-1.5 py-0.5 rounded text-[10px] font-bold"
-        style={{ background: m.badge, color: '#fff' }}
+        className="px-1.5 py-0.5 rounded text-[9px] font-bold text-white"
+        style={{ background: m.badge }}
       >
         {m.mult}
       </span>
@@ -90,40 +93,25 @@ const ZoneBadge = ({ level }) => {
   );
 };
 
-const LogEntry = ({ entry }) => {
-  const s = LOG_STYLE[entry.severity] || LOG_STYLE.info;
-  return (
-    <div
-      className="log-entry flex items-start gap-2 px-2 py-1.5 rounded-lg text-[11px]"
-      style={{ background: s.dim }}
-    >
-      <span
-        className="mt-[3px] shrink-0 w-1.5 h-1.5 rounded-full"
-        style={{ background: s.dot }}
-      />
-      <div className="min-w-0 flex-1">
-        <span className="text-slate-500 mr-1.5 font-mono">{entry.timestamp}</span>
-        {entry.subjectId && (
-          <span className="text-slate-500 mr-1">[{entry.subjectId}]</span>
-        )}
-        <span style={{ color: s.text }}>{entry.message}</span>
-      </div>
-    </div>
-  );
-};
+// ---------------------------------------------------------------------------
+// ClimbingFlash — appears only when kinematic trigger fires
+// ---------------------------------------------------------------------------
+
+const ClimbingFlash = () => (
+  <div
+    className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg animate-pulse"
+    style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.45)' }}
+  >
+    <TrendingUp size={13} className="text-red-400 shrink-0" />
+    <span className="text-xs font-bold text-red-300 tracking-widest">CLIMBING DETECTED</span>
+  </div>
+);
 
 // ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
 
-const DynamicScoringPanel = ({ persons = [], activityLog = [] }) => {
-  const logRef = useRef(null);
-
-  // Scroll log to top whenever new entries arrive (newest-first list)
-  useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = 0;
-  }, [activityLog.length]);
-
+const DynamicScoringPanel = ({ persons = [] }) => {
   // Focus on the highest-risk person
   const primary = persons.reduce((best, p) => {
     const s = p.scores?.total_person_score ?? 0;
@@ -131,165 +119,98 @@ const DynamicScoringPanel = ({ persons = [], activityLog = [] }) => {
   }, null);
 
   const scores = {
-    climbing_score:     primary?.scores?.climbing_score     ?? 0,
     loitering_score:    primary?.scores?.loitering_score    ?? 0,
     total_person_score: primary?.scores?.total_person_score ?? 0,
   };
-  const zoneLevel  = primary?.zone_risk_level ?? null;
+
+  const alertTypes  = primary?.alert_types ?? [];
+  const zoneLevel   = primary?.zone_risk_level ?? null;
+  const isClimbing  = alertTypes.includes('climbing');
+  const isLoitering = alertTypes.includes('loitering') || scores.loitering_score >= 70;
+  const isAlert     = isClimbing || isLoitering || scores.total_person_score >= 70;
+
   const totalColor = scoreColors(scores.total_person_score);
 
-  // Derive active KPI alert type from triggers list (array of [alert_type, trigger_type] pairs).
-  const triggers = primary?.scores?.triggers ?? [];
-  const kpiTypes = triggers.map(([t]) => t);
-  let kpiAlertLabel = null;
-  if (kpiTypes.includes('climbing+loitering'))                         kpiAlertLabel = 'CLIMBING + LOITERING';
-  else if (kpiTypes.includes('climbing') && kpiTypes.includes('loitering')) kpiAlertLabel = 'CLIMBING + LOITERING';
-  else if (kpiTypes.includes('climbing'))                              kpiAlertLabel = 'CLIMBING';
-  else if (kpiTypes.includes('loitering'))                             kpiAlertLabel = 'LOITERING';
-
-  const isAlert = kpiAlertLabel != null || scores.total_person_score >= 50;
-
   return (
-    <>
-      {/* Scoped keyframe for log-entry slide-in */}
-      <style>{`
-        @keyframes logSlideIn {
-          from { opacity: 0; transform: translateY(-6px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        .log-entry { animation: logSlideIn 0.3s ease; }
-      `}</style>
+    <div
+      className="bg-slate-900 rounded-2xl border flex flex-col overflow-hidden transition-colors duration-500"
+      style={{ borderColor: isAlert ? 'rgba(239,68,68,0.3)' : 'rgb(30,41,59)' }}
+    >
 
-      <div className="bg-slate-900 rounded-2xl border border-slate-800 flex flex-col h-full overflow-hidden">
-
-        {/* ── Header ───────────────────────────────────────────────── */}
-        <div
-          className="px-4 py-3 border-b border-slate-800 flex items-center justify-between transition-all duration-500"
-          style={{ background: isAlert ? 'rgba(239,68,68,0.04)' : 'transparent' }}
-        >
-          <div className="flex items-center gap-2">
-            <Target
-              size={16}
-              className="transition-colors duration-500"
-              style={{ color: isAlert ? '#f87171' : '#818cf8' }}
-            />
-            <span className="font-semibold text-slate-100 text-sm">Live Threat Analysis</span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {persons.length > 0 && (
-              <div className="flex items-center gap-1 text-[10px] text-slate-500">
-                <Users size={10} />
-                {persons.length} subject{persons.length !== 1 ? 's' : ''}
-              </div>
-            )}
-            {isAlert && (
-              <span className="text-[10px] text-red-400 font-semibold animate-pulse bg-red-500/10 px-1.5 py-0.5 rounded">
-                ALERT
-              </span>
-            )}
-          </div>
+      {/* ── Header ──────────────────────────────────────────── */}
+      <div
+        className="px-4 py-3 flex items-center justify-between shrink-0 transition-colors duration-500"
+        style={{ borderBottom: '1px solid rgb(30,41,59)', background: isAlert ? 'rgba(239,68,68,0.03)' : 'transparent' }}
+      >
+        <div className="flex items-center gap-2">
+          <Target size={14} style={{ color: isAlert ? '#f87171' : '#6366f1' }} className="transition-colors duration-500" />
+          <span className="text-sm font-semibold text-slate-100">Threat Analysis</span>
         </div>
-
-        {/* ── Subject info ──────────────────────────────────────────── */}
-        <div className="px-4 pt-3 pb-0">
-          {primary ? (
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <span className="text-xs font-semibold text-slate-300">
-                  Subject {primary.global_id}
-                </span>
-                <span className="text-[10px] text-slate-500 ml-2">
-                  {primary.time_in_frame_seconds}s in frame
-                </span>
-              </div>
-              <div
-                className="text-xs font-bold px-2 py-0.5 rounded-md tabular-nums"
-                style={{
-                  color:      totalColor.text,
-                  background: totalColor.ring,
-                  border:     `1px solid ${totalColor.bar}30`,
-                }}
-              >
-                Risk {primary.risk_score}
-              </div>
+        <div className="flex items-center gap-2">
+          {persons.length > 0 && (
+            <div className="flex items-center gap-1 text-[10px] text-slate-600">
+              <Users size={10} />
+              {persons.length}
             </div>
-          ) : (
-            <p className="text-xs text-slate-600 italic mb-3">No subjects detected — monitoring…</p>
+          )}
+          {isAlert && (
+            <span className="text-[9px] text-red-400 font-bold animate-pulse bg-red-500/10 px-1.5 py-0.5 rounded tracking-wider">
+              ALERT
+            </span>
           )}
         </div>
+      </div>
 
-        {/* ── Zone badge ────────────────────────────────────────────── */}
-        {zoneLevel && (
-          <div className="px-4 pb-3">
-            <ZoneBadge level={zoneLevel} />
-          </div>
-        )}
-
-        {/* ── KPI alert type banner ─────────────────────────────────── */}
-        {kpiAlertLabel && (
-          <div className="px-4 pb-3">
+      {/* ── Subject header ──────────────────────────────────── */}
+      <div className="px-4 pt-3 pb-2 shrink-0">
+        {primary ? (
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-xs font-semibold text-slate-300">Subject {primary.global_id}</span>
+              <span className="text-[10px] text-slate-600 ml-2 font-mono">{primary.time_in_frame_seconds}s</span>
+            </div>
+            {/* Badge uses total_person_score — single source of truth matching the score bars below */}
             <div
-              className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg animate-pulse"
-              style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.5)' }}
+              className="text-xs font-bold px-2 py-0.5 rounded tabular-nums transition-all duration-500"
+              style={{
+                color:      totalColor.text,
+                background: totalColor.ring,
+                border:     `1px solid ${scores.total_person_score > 0 ? totalColor.bar + '40' : 'rgb(30,41,59)'}`,
+              }}
             >
-              <AlertTriangle size={13} className="text-red-400 shrink-0" />
-              <span className="text-xs font-bold text-red-300 tracking-widest">
-                {kpiAlertLabel}
-              </span>
+              {scores.total_person_score > 0 ? `Score ${scores.total_person_score}` : 'Clear'}
             </div>
           </div>
+        ) : (
+          <p className="text-[11px] text-slate-700 italic">No subjects detected — monitoring…</p>
         )}
+      </div>
 
-        {/* ── Score bars ────────────────────────────────────────────── */}
-        <div className="px-4 space-y-2 pb-3">
+      {/* ── Dynamic indicators (only render when relevant) ──── */}
+      {primary && (
+        <div className="px-4 pb-3 space-y-2 shrink-0">
+          {/* Zone badge */}
+          {zoneLevel && <ZoneBadge level={zoneLevel} />}
+
+          {/* Climbing kinematic trigger */}
+          {isClimbing && <ClimbingFlash />}
+
+          {/* Loitering score — visible always when subject present, muted when 0 */}
           <ScoreBar
-            label="Climbing Score"
-            value={scores.climbing_score}
-            icon={TrendingUp}
-          />
-          <ScoreBar
-            label="Loitering Score"
+            label="Loitering"
             value={scores.loitering_score}
             icon={Clock}
           />
+
+          {/* Total threat score — single KPI source of truth */}
           <ScoreBar
-            label="Total Score"
+            label="Threat Score"
             value={scores.total_person_score}
             icon={Zap}
-            isBold
           />
         </div>
-
-        {/* ── Activity log ──────────────────────────────────────────── */}
-        <div className="flex-1 flex flex-col min-h-0 border-t border-slate-800/60">
-          <div className="px-4 py-2 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-              <Activity size={10} />
-              Activity Log
-            </div>
-            {activityLog.length > 0 && (
-              <span className="text-[10px] text-slate-600">{activityLog.length} events</span>
-            )}
-          </div>
-
-          <div
-            ref={logRef}
-            className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5 custom-scrollbar"
-          >
-            {activityLog.length === 0 ? (
-              <p className="text-[10px] text-slate-700 italic px-2 pt-1">
-                Events will appear here as scoring activity is detected…
-              </p>
-            ) : (
-              activityLog.map(entry => (
-                <LogEntry key={entry.id} entry={entry} />
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-    </>
+      )}
+    </div>
   );
 };
 

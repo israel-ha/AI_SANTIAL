@@ -126,7 +126,16 @@ class VideoWorker(threading.Thread):
         _latest_frame = [None]   # newest raw frame from the video source
         _frame_seq    = [0]      # incremented each time a new frame is stored
 
-        # ── YOLO worker — runs at full CPU speed, never blocks the stream ──
+        # ── YOLO worker — runs at 1/4 CPU load via frame skipping ──────────
+        # Only 1 in every YOLO_SKIP_N frames triggers real inference; the
+        # other 3 are skipped so the detector's tracked dict (and therefore
+        # the annotation cache) simply holds its last known state.
+        # The MJPEG stream still pushes every decoded frame at full fps —
+        # the operator sees continuous video with stable, slightly-lagging
+        # bounding boxes, which is indistinguishable from full inference for
+        # typical CCTV footage where subjects move slowly.
+        YOLO_SKIP_N = 4
+
         def _yolo_worker():
             last_seq = -1
             while not self._stop_event.is_set() and not self._superseded():
@@ -134,13 +143,13 @@ class VideoWorker(threading.Thread):
                     seq   = _frame_seq[0]
                     frame = _latest_frame[0]
                 if seq == last_seq or frame is None:
-                    # No new frame yet — yield briefly and try again.
                     time.sleep(0.005)
                     continue
                 last_seq = seq
+                if seq % YOLO_SKIP_N != 0:
+                    # Non-inference frame — reuse last detector state (zero CPU cost).
+                    continue
                 try:
-                    # run_inference() bypasses YOLO_EVERY_N_FRAMES so this
-                    # thread runs at maximum CPU throughput.
                     self.detector.run_inference(frame)
                 except Exception as exc:
                     print(f"[WARN] VideoWorker[{self.camera_id}]: YOLO — {exc}")
@@ -183,7 +192,8 @@ class VideoWorker(threading.Thread):
         print(
             f"[INFO] VideoWorker[{self.camera_id}]: started — "
             f"stream={target_fps:.1f} fps (hardcapped)  source={self.source.fps:.1f} fps  "
-            f"yolo=continuous background  run_id={self.run_id}"
+            f"yolo=1-in-{YOLO_SKIP_N} frames (~{target_fps/YOLO_SKIP_N:.1f} inferences/s)  "
+            f"run_id={self.run_id}"
         )
 
         try:
