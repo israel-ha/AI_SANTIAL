@@ -17,11 +17,76 @@ const ZONE_COLORS = {
   High:   { fill: 'rgba(239, 68, 68, 0.20)',  stroke: '#ef4444' },
 };
 
-const MAX_LOG_ENTRIES = 50;
+const MAX_LOG_ENTRIES    = 50;
 const SCORE_JUMP_THRESHOLD = 15;
+const BANNER_DURATION_MS = 7000;   // how long a threat banner stays visible after last update
 
 const nowHHMMSS = () => new Date().toTimeString().slice(0, 8);
 const makeLogId = (() => { let n = 0; return () => `log_${++n}`; })();
+
+// ---------------------------------------------------------------------------
+// Threat Banner helpers
+// ---------------------------------------------------------------------------
+
+const _fmtBehavior = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+const _fmtBehaviors = (arr) => arr.map(_fmtBehavior).join(' + ');
+
+const _bannerLevel = (types) => {
+  if (types.includes('climbing'))  return 'critical';
+  if (types.includes('intrusion')) return 'high';
+  return 'medium';
+};
+
+const BANNER_STYLE = {
+  critical: { border: 'rgba(239,68,68,0.6)',  bg: 'rgba(60,8,8,0.93)',   accent: '#f87171', label: 'CRITICAL THREAT' },
+  high:     { border: 'rgba(249,115,22,0.6)', bg: 'rgba(60,20,5,0.93)',  accent: '#fb923c', label: 'HIGH THREAT'      },
+  medium:   { border: 'rgba(234,179,8,0.5)',  bg: 'rgba(54,28,4,0.93)',  accent: '#fbbf24', label: 'THREAT DETECTED'  },
+};
+
+// One banner per subject — shows current behaviors and escalation path if applicable.
+const ThreatBanner = ({ gid, banner }) => {
+  const s           = BANNER_STYLE[banner.level] || BANNER_STYLE.medium;
+  const isEscalated = banner.escalationFrom?.length > 0;
+
+  return (
+    <div
+      className="rounded-xl px-3 py-2.5 backdrop-blur-md flex flex-col gap-1.5 shadow-2xl"
+      style={{ border: `1px solid ${s.border}`, background: s.bg, minWidth: 210 }}
+    >
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-6">
+        <div className="flex items-center gap-1.5">
+          <span
+            className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0"
+            style={{ background: s.accent, boxShadow: `0 0 6px ${s.accent}` }}
+          />
+          <span className="text-[9px] font-bold tracking-[0.15em]" style={{ color: s.accent }}>
+            {s.label}
+          </span>
+        </div>
+        <span className="text-[9px] text-slate-500 font-mono shrink-0">#{gid}</span>
+      </div>
+
+      {/* Behavior row — escalation path or current state */}
+      {isEscalated ? (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[11px] text-slate-400">{_fmtBehaviors(banner.escalationFrom)}</span>
+          <span className="text-slate-600">→</span>
+          <span className="text-[12px] font-bold" style={{ color: s.accent }}>
+            {_fmtBehaviors(banner.behaviors)}
+          </span>
+          <span className="text-[9px] font-bold text-red-400 animate-pulse">↑ ESCALATED</span>
+        </div>
+      ) : (
+        <span className="text-[13px] font-bold" style={{ color: s.accent }}>
+          {_fmtBehaviors(banner.behaviors)}
+        </span>
+      )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 
 const LiveRoom = () => {
   const [alerts, setAlerts]                     = useState([]);
@@ -38,6 +103,9 @@ const LiveRoom = () => {
   const canvasRef         = useRef(null);
   const videoContainerRef = useRef(null);
   const prevPersonsRef    = useRef({});
+  const bannerTimersRef   = useRef({});   // global_id → expiry timeout handle
+
+  const [threatBanners, setThreatBanners] = useState(new Map());   // global_id → banner state
 
   // Derived: is the operator being asked to make a decision right now?
   const hasActiveAlert = activeDetections.length > 0;
@@ -143,11 +211,41 @@ const LiveRoom = () => {
           }
         }
 
+        // ── Threat banner aggregation ─────────────────────────────────────
+        // One banner per subject. If new behaviors are added to an existing
+        // banner, record the escalation path and reset the expiry timer so
+        // the operator has a full 7 s to read the updated state.
+        if (alertTypes.length > 0) {
+          setThreatBanners(prev => {
+            const next     = new Map(prev);
+            const existing = next.get(gid);
+            const prevBeh  = existing?.behaviors ?? [];
+            const added    = alertTypes.filter(t => !prevBeh.includes(t));
+            const allBeh   = [...new Set([...prevBeh, ...alertTypes])];
+            next.set(gid, {
+              behaviors:      allBeh,
+              // Capture the "before" snapshot only on the first escalation event
+              escalationFrom: added.length > 0 && prevBeh.length > 0
+                ? prevBeh
+                : (existing?.escalationFrom ?? null),
+              level: _bannerLevel(allBeh),
+            });
+            return next;
+          });
+          clearTimeout(bannerTimersRef.current[gid]);
+          bannerTimersRef.current[gid] = setTimeout(() => {
+            setThreatBanners(m => { const n = new Map(m); n.delete(gid); return n; });
+          }, BANNER_DURATION_MS);
+        }
+
         prev[gid] = { zone_risk_level: zone, scores, alert_types: alertTypes };
       });
     });
 
-    return () => socketRef.current.disconnect();
+    return () => {
+      socketRef.current.disconnect();
+      Object.values(bannerTimersRef.current).forEach(clearTimeout);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -290,6 +388,15 @@ const LiveRoom = () => {
                 </span>
               )}
             </div>
+
+            {/* Top-right: active threat banners — one per subject, auto-expire after 7 s */}
+            {threatBanners.size > 0 && (
+              <div className="absolute top-3 right-3 z-30 flex flex-col gap-2 items-end">
+                {[...threatBanners.entries()].map(([gid, banner]) => (
+                  <ThreatBanner key={gid} gid={gid} banner={banner} />
+                ))}
+              </div>
+            )}
 
             {/* Bottom overlay: climbing kinematic alert — visible only when triggered */}
             {climbingActive && (

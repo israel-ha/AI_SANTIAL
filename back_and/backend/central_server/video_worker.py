@@ -134,7 +134,7 @@ class VideoWorker(threading.Thread):
         # the operator sees continuous video with stable, slightly-lagging
         # bounding boxes, which is indistinguishable from full inference for
         # typical CCTV footage where subjects move slowly.
-        YOLO_SKIP_N = 4
+        YOLO_SKIP_N = 6
 
         def _yolo_worker():
             last_seq = -1
@@ -181,11 +181,7 @@ class VideoWorker(threading.Thread):
         yolo_thread.start()
         ingest_thread.start()
 
-        # Hardcap at 15 fps: enough for CCTV-quality playback while halving the
-        # annotation + encode + emit CPU load compared to native 25-30 fps.
-        # The compensated sleep (stream_interval - elapsed) keeps pace exactly —
-        # loop overhead is absorbed so the hardcap is the true emitted rate.
-        target_fps      = min(self.source.fps, 15.0)
+        target_fps      = min(self.source.fps, 12.0)
         stream_interval = 1.0 / max(target_fps, 1.0)
         last_send       = 0.0
 
