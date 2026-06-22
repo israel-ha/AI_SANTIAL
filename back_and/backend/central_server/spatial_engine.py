@@ -264,39 +264,44 @@ class SpatialEngine:
     @staticmethod
     def _is_climbing(person) -> bool:
         """
-        Detect climbing via net vertical displacement over the last 40 positions
-        (~2 s of history at the YOLO background thread's inference rate).
+        Detect climbing via net vertical displacement over the last 20 inference
+        positions (~10 s of real time at the YOLO thread's 2-inferences/sec cadence
+        with YOLO_SKIP_N=6 on a 12-fps stream).
 
-        Net displacement is resilient to bounding-box jitter: individual frames
-        may bounce up/down, but a true climber shows consistent upward travel
-        over the full window.
+        Uses a pure net-rise test — NO directional-consistency gate.
+        A consistency gate was tried but the frame-skipping (1-in-6) + YOLO bbox
+        jitter produced enough noisy pairs to keep the ratio below 60 % even for
+        genuine climbers, blocking real events. The false-positive risk it guarded
+        against (zone-entry misclassified as climbing) is now prevented at the
+        rule-evaluation level (zone-type rules always emit "intrusion", never
+        "climbing"), so the gate is no longer needed.
 
-        In image coordinates Y increases downward, so moving upward (climbing)
-        means Y *decreases*:
-            net_rise = oldest_y − newest_y   →  positive = moved upward
+        In image coordinates Y increases downward, so moving upward means Y *decreases*:
+            net_rise = oldest_y − newest_y   →  positive = subject rose in the frame
 
-        12-pixel threshold accommodates distant CCTV cameras where subjects
-        appear small. Using only 5 positions as the minimum prevents the
-        first few frames after a track re-assignment from blocking detection.
+        20-pixel threshold over a 10-second window: enough to reject drift from
+        diagonal walking (typically < 10 px per second), but trivially exceeded
+        by actual fence-climbing (typically 30-100 px per second).
         """
         positions = person.positions
         if len(positions) < 5:
             return False
 
-        window   = positions[-40:]   # last 40 centroids (~2 s of YOLO inference history)
+        window   = positions[-20:]   # last 20 inference frames ≈ 10 s of real time
         oldest_y = window[0][1]
         newest_y = window[-1][1]
         net_rise = oldest_y - newest_y   # positive → subject rose in the frame
 
-        if net_rise < 12:
-            return False
+        result = net_rise >= 20
 
-        # Directional consistency guard: at least 60 % of consecutive centroid
-        # pairs must show upward movement (y decreasing).  This rejects subjects
-        # who are merely walking diagonally or approaching the camera on a slight
-        # incline, where net_rise can exceed 12 px from positional drift alone.
-        upward_steps = sum(1 for a, b in zip(window[:-1], window[1:]) if b[1] < a[1])
-        return upward_steps / (len(window) - 1) >= 0.60
+        # ── DEBUG: print every ingest cycle so we can see the live signal ─
+        print(
+            f"[CLIMB-DEBUG] pid={person.person_id} | "
+            f"pos_count={len(positions)} | window={len(window)} | "
+            f"net_rise={net_rise:.1f}px | climbing={result}"
+        )
+
+        return result
 
     # ------------------------------------------------------------------
     # Hybrid zone scoring (drawn zones from zone_store)
