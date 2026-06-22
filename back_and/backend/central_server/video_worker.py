@@ -175,19 +175,18 @@ class VideoWorker(threading.Thread):
         yolo_thread.start()
         ingest_thread.start()
 
-        # Pace the stream at the source video's native FPS so playback is real-time.
-        # Using source.fps (read from cap.get(CAP_PROP_FPS)) prevents slow-motion
-        # caused by a config.STREAM_FPS that is lower than the actual video rate.
-        # The compensated sleep (stream_interval - elapsed) absorbs per-tick overhead
-        # so the target rate is maintained precisely regardless of encode/emit time.
-        target_fps      = max(self.source.fps, 1.0)
-        stream_interval = 1.0 / target_fps
+        # Hardcap at 15 fps: enough for CCTV-quality playback while halving the
+        # annotation + encode + emit CPU load compared to native 25-30 fps.
+        # The compensated sleep (stream_interval - elapsed) keeps pace exactly —
+        # loop overhead is absorbed so the hardcap is the true emitted rate.
+        target_fps      = min(self.source.fps, 15.0)
+        stream_interval = 1.0 / max(target_fps, 1.0)
         last_send       = 0.0
 
         print(
             f"[INFO] VideoWorker[{self.camera_id}]: started — "
-            f"stream={target_fps:.1f} fps (source native)  yolo=continuous background  "
-            f"run_id={self.run_id}"
+            f"stream={target_fps:.1f} fps (hardcapped)  source={self.source.fps:.1f} fps  "
+            f"yolo=continuous background  run_id={self.run_id}"
         )
 
         try:
@@ -272,7 +271,18 @@ class VideoWorker(threading.Thread):
                 if self._stop_event.is_set() or self._superseded():
                     break
 
-                _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                # Downscale to ≤640 px wide before encoding.  Annotations are already
+                # drawn at full resolution; shrinking here cuts JPEG payload size and
+                # cv2.imencode CPU time without affecting YOLO (which always receives
+                # the full-res frame via the shared frame slot).
+                out_h, out_w = annotated.shape[:2]
+                if out_w > 640:
+                    annotated = cv2.resize(
+                        annotated, (640, int(out_h * 640 / out_w)),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+
+                _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 60])
                 out_b64 = base64.b64encode(buf).decode("utf-8")
                 self.socketio.emit("processed_frame", f"data:image/jpeg;base64,{out_b64}")
 
