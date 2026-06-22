@@ -175,14 +175,19 @@ class VideoWorker(threading.Thread):
         yolo_thread.start()
         ingest_thread.start()
 
-        # Stream loop paces at STREAM_FPS — one frame read + one emit per tick.
-        stream_interval = 1.0 / max(config.STREAM_FPS, 1)
+        # Pace the stream at the source video's native FPS so playback is real-time.
+        # Using source.fps (read from cap.get(CAP_PROP_FPS)) prevents slow-motion
+        # caused by a config.STREAM_FPS that is lower than the actual video rate.
+        # The compensated sleep (stream_interval - elapsed) absorbs per-tick overhead
+        # so the target rate is maintained precisely regardless of encode/emit time.
+        target_fps      = max(self.source.fps, 1.0)
+        stream_interval = 1.0 / target_fps
         last_send       = 0.0
 
         print(
             f"[INFO] VideoWorker[{self.camera_id}]: started — "
-            f"stream={config.STREAM_FPS} fps  yolo=continuous background  "
-            f"src={self.source.fps:.1f} fps  run_id={self.run_id}"
+            f"stream={target_fps:.1f} fps (source native)  yolo=continuous background  "
+            f"run_id={self.run_id}"
         )
 
         try:

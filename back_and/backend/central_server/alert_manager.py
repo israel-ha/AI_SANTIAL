@@ -182,6 +182,13 @@ def _collect_triggers(
     if "intrusion" in result.alert_types:
         triggers.append(("intrusion", "INTRUSION"))
 
+    # CLIMBING — global detection, completely independent of zone intersection.
+    # Fires immediately on the first ingest cycle where _is_climbing() returns True
+    # for any tracked person, without requiring score accumulation.
+    # The 60-second cooldown in _cooldown_ok prevents duplicate alerts.
+    if "climbing" in result.alert_types:
+        triggers.append(("climbing", "CLIMBING"))
+
     if not scores:
         return triggers
 
@@ -189,19 +196,15 @@ def _collect_triggers(
     l = scores.get("loitering_score",    0)
     t = scores.get("total_person_score", 0)
 
-    climbing_met  = c >= config.CLIMBING_ALERT_THRESHOLD
+    # Climbing is handled above via direct spatial detection — skip score-based climbing
+    # to avoid a second alert after the cooldown window expires.
     loitering_met = l >= config.LOITERING_ALERT_THRESHOLD
     combined_met  = (
         t >= config.COMBINED_ALERT_THRESHOLD
-        and not climbing_met
         and not loitering_met
     )
 
-    if climbing_met and loitering_met:
-        triggers.append(("climbing+loitering", "BOTH"))
-    elif climbing_met:
-        triggers.append(("climbing",  "CLIMBING"))
-    elif loitering_met:
+    if loitering_met:
         triggers.append(("loitering", "LOITERING"))
 
     if combined_met:

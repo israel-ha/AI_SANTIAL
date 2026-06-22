@@ -64,6 +64,16 @@ class Detector:
             config.YOLO_EVERY_N_FRAMES,
             config.TRACKER_CONFIG_PATH,
         )
+        # Warmup the feature extractor: forces MobileNet V3 to JIT-compile its
+        # kernels and pre-allocate buffers so the first real person crop is instant.
+        try:
+            _dummy_crop = np.zeros(
+                (config.FEATURE_INPUT_H, config.FEATURE_INPUT_W, 3), dtype=np.uint8
+            )
+            self._extractor.extract([_dummy_crop])
+            log.info("Detector: feature extractor warmed up.")
+        except Exception as _exc:
+            log.warning("Detector: feature extractor warmup failed (%s).", _exc)
 
     # ------------------------------------------------------------------
     # Public API
