@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
-import { AlertTriangle, CheckCircle, TrendingUp, Pen, Film } from 'lucide-react';
+import { AlertTriangle, CheckCircle, TrendingUp, Pen, Film, Trash2 } from 'lucide-react';
 import DrawingOverlay from '../components/DrawingOverlay';
 import DynamicScoringPanel from '../components/DynamicScoringPanel';
 import AlertHistoryModal from '../components/AlertHistoryModal';
@@ -318,15 +318,16 @@ const LiveRoom = () => {
     <>
       <div className="grid grid-cols-12 gap-4 h-[calc(100vh-8rem)]">
 
-        {/* ── LEFT: video feed + action bar ───────────────────── */}
-        <div className="col-span-8 flex flex-col gap-3">
+        {/* ════════════════════════════════════════════════════════
+            LEFT COL (8): video → logs → action strip
+            ════════════════════════════════════════════════════════ */}
+        <div className="col-span-8 flex flex-col gap-3 min-h-0">
 
-          {/* Video — fills all available height above the action bar */}
+          {/* ── 1. Video feed ──────────────────────────────────── */}
           <div
             ref={videoContainerRef}
             className="relative bg-black rounded-2xl overflow-hidden flex-1 min-h-0 border border-slate-800"
           >
-            {/* MJPEG stream — browser decodes natively, no Socket.IO overhead */}
             <img
               ref={imgRef}
               src={MJPEG_URL}
@@ -334,13 +335,13 @@ const LiveRoom = () => {
               alt="Live camera stream"
             />
 
-            {/* Client-side bounding-box canvas */}
+            {/* Canvas: client-side bounding boxes */}
             <canvas
               ref={canvasRef}
-              className={`absolute top-0 left-0 w-full h-full pointer-events-none z-10 ${isDrawingMode ? 'opacity-0' : ''}`}
+              className={`absolute inset-0 w-full h-full pointer-events-none z-10 ${isDrawingMode ? 'opacity-0' : ''}`}
             />
 
-            {/* Zone polygon SVG overlay */}
+            {/* Zone SVG overlay */}
             {restrictedZones.length > 0 && !isDrawingMode && (
               <svg
                 className="absolute inset-0 w-full h-full pointer-events-none z-10"
@@ -354,10 +355,8 @@ const LiveRoom = () => {
                     <polygon
                       key={zone.id}
                       points={zone.points.map(p => `${p.x},${p.y}`).join(' ')}
-                      fill={c.fill}
-                      stroke={c.stroke}
-                      strokeWidth="2"
-                      vectorEffect="non-scaling-stroke"
+                      fill={c.fill} stroke={c.stroke}
+                      strokeWidth="2" vectorEffect="non-scaling-stroke"
                     />
                   );
                 })}
@@ -377,7 +376,7 @@ const LiveRoom = () => {
               />
             )}
 
-            {/* Top-left: mode badge */}
+            {/* Top-left: LIVE / DEMO badge */}
             <div className="absolute top-3 left-3 z-20">
               {videoMode && (
                 <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold border
@@ -389,7 +388,7 @@ const LiveRoom = () => {
               )}
             </div>
 
-            {/* Top-right: active threat banners — one per subject, auto-expire after 7 s */}
+            {/* Top-right: per-subject threat banners (auto-expire 7 s) */}
             {threatBanners.size > 0 && (
               <div className="absolute top-3 right-3 z-30 flex flex-col gap-2 items-end">
                 {[...threatBanners.entries()].map(([gid, banner]) => (
@@ -398,9 +397,9 @@ const LiveRoom = () => {
               </div>
             )}
 
-            {/* Bottom overlay: climbing kinematic alert — visible only when triggered */}
+            {/* Bottom strip: climbing kinematic alert */}
             {climbingActive && (
-              <div className="absolute bottom-0 left-0 right-0 z-20 flex items-center justify-center gap-2 py-2 bg-red-600/90 animate-pulse">
+              <div className="absolute bottom-0 inset-x-0 z-20 flex items-center justify-center gap-2 py-2 bg-red-600/90 animate-pulse">
                 <TrendingUp size={14} className="text-white" />
                 <span className="text-white text-xs font-bold tracking-[0.12em]">
                   ⚠ CLIMBING BEHAVIOUR DETECTED
@@ -409,86 +408,102 @@ const LiveRoom = () => {
             )}
           </div>
 
-          {/* ── Action bar ──────────────────────────────────────── */}
-          {/*
-            Fixed-height slot: quietly shows "Armed" when idle;
-            reveals Confirm / False buttons the moment a detection arrives.
-            No layout shift — the height never changes.
-          */}
-          <div className="h-17 flex gap-3 shrink-0">
+          {/* ── 2. Tabbed system logs — full video width, natural height ── */}
+          <div className="shrink-0">
+            <SystemLogs alerts={alerts} activityLog={activityLog} />
+          </div>
 
+          {/* ── 3. Compact action strip ─────────────────────────── */}
+          {/*
+            Single-row, fixed height. Idle → calm "Armed" indicator.
+            Alert → Confirm / False buttons appear in the same slot.
+            Zone + History controls live permanently on the right end.
+          */}
+          <div className="h-11 flex gap-2 shrink-0">
+
+            {/* Status / decision area */}
             {hasActiveAlert ? (
-              /* Decision buttons — rendered only when operator action is required */
               <>
                 <button
                   onClick={() => handleDecision('confirmed')}
                   disabled={isDrawingMode}
-                  className="flex-1 rounded-xl flex items-center justify-center gap-2 text-sm font-bold
+                  className="flex-1 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold
                     bg-red-500 hover:bg-red-600 active:scale-[0.98] text-white
                     transition-all duration-150 shadow-lg shadow-red-900/40
                     disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  <AlertTriangle size={18} />
+                  <AlertTriangle size={14} />
                   Confirm Alarm
                 </button>
                 <button
                   onClick={() => handleDecision('false_alarm')}
                   disabled={isDrawingMode}
-                  className="flex-1 rounded-xl flex items-center justify-center gap-2 text-sm font-bold
+                  className="flex-1 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold
                     bg-slate-700 hover:bg-emerald-700 active:scale-[0.98] text-white
                     transition-all duration-150 shadow-lg
                     disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  <CheckCircle size={18} />
+                  <CheckCircle size={14} />
                   Mark as False
                 </button>
               </>
             ) : (
-              /* Calm status indicator — no visual noise when system is idle */
-              <div className="flex-1 bg-slate-900/50 rounded-xl border border-slate-800/80 flex items-center justify-center gap-3">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(52,211,153,0.6)] animate-pulse" />
-                <span className="text-[11px] text-slate-600 tracking-[0.14em] uppercase font-semibold select-none">
+              <div className="flex-1 bg-slate-900/50 rounded-xl border border-slate-800/70 flex items-center justify-center gap-2.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_rgba(52,211,153,0.6)] animate-pulse" />
+                <span className="text-[10px] text-slate-600 tracking-[0.14em] uppercase font-semibold select-none">
                   System Armed &amp; Monitoring
                 </span>
               </div>
             )}
 
-            {/* Secondary controls */}
-            <div className="flex flex-col gap-1.5 shrink-0">
-              <button
-                onClick={() => setIsDrawingMode(v => !v)}
-                title="Draw VCA zone"
-                className={`flex items-center gap-1.5 px-3 text-xs rounded-lg flex-1 transition-colors
-                  ${isDrawingMode
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-slate-800 hover:bg-slate-700 text-slate-500 border border-slate-700'}`}
-              >
-                <Pen size={11} />
-                {isDrawingMode ? 'Drawing…' : 'Zone'}
-              </button>
-              <button
-                onClick={() => setShowHistory(true)}
-                title="Alert History"
-                className="flex items-center gap-1.5 px-3 text-xs rounded-lg flex-1
-                  bg-slate-800 hover:bg-slate-700 text-slate-500 border border-slate-700 transition-colors"
-              >
-                <Film size={11} />
-                History
-              </button>
-            </div>
+            {/* Zone draw button */}
+            <button
+              onClick={() => setIsDrawingMode(v => !v)}
+              title="Draw VCA zone"
+              className={`flex items-center gap-1.5 px-3 text-xs rounded-xl shrink-0 transition-colors border
+                ${isDrawingMode
+                  ? 'bg-indigo-600 border-indigo-500 text-white'
+                  : 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-500'}`}
+            >
+              <Pen size={11} />
+              {isDrawingMode ? 'Drawing…' : 'Zone'}
+            </button>
+
+            {/* Clear all zones button */}
+            <button
+              onClick={() => {
+                setRestrictedZones([]);
+                socketRef.current?.emit('update_restricted_zone', { zones: [] });
+              }}
+              disabled={restrictedZones.length === 0}
+              title="Clear all drawn zones"
+              className="flex items-center gap-1.5 px-3 text-xs rounded-xl shrink-0 transition-colors border
+                bg-slate-800 border-slate-700 hover:bg-red-900/50 hover:border-red-800/50 text-slate-500 hover:text-red-400
+                disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-slate-800
+                disabled:hover:text-slate-500 disabled:hover:border-slate-700"
+            >
+              <Trash2 size={11} />
+              Clear
+            </button>
+
+            {/* Alert history button */}
+            <button
+              onClick={() => setShowHistory(true)}
+              title="Alert History"
+              className="flex items-center gap-1.5 px-3 text-xs rounded-xl shrink-0
+                bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-500 transition-colors"
+            >
+              <Film size={11} />
+              History
+            </button>
           </div>
         </div>
 
-        {/* ── RIGHT: threat panel + unified logs ──────────────── */}
-        <div className="col-span-4 flex flex-col gap-3 min-h-0">
-
-          {/* Threat analysis — content-sized, shrinks when idle */}
-          <div className="shrink-0">
-            <DynamicScoringPanel persons={trackingPersons} />
-          </div>
-
-          {/* System logs — tabbed Alerts / Activity — takes all remaining height */}
-          <SystemLogs alerts={alerts} activityLog={activityLog} />
+        {/* ════════════════════════════════════════════════════════
+            RIGHT COL (4): subject tracking cards — matches grid row height
+            ════════════════════════════════════════════════════════ */}
+        <div className="col-span-4 h-full min-h-0 flex flex-col bg-slate-900 rounded-2xl border border-slate-800 p-3">
+          <DynamicScoringPanel persons={trackingPersons} />
         </div>
       </div>
 

@@ -183,11 +183,19 @@ class SpatialEngine:
                                if (best_rule and best_rule.rule_type == "zone") else 0)
                 final_dwell = (best_rule.conditions.min_dwell_seconds if best_rule else 30)
                 in_zone_rule = final_score >= config.RISK_ALERT_THRESHOLD
-                alert_types  = [best_rule.alert_type] if (in_zone_rule and best_rule) else []
+                # Zone-type rules always emit "intrusion" — their alert_type field is
+                # NOT used to fire climbing, preventing zone membership from masquerading
+                # as kinematic detection.  Tripwire rules keep their own alert_type.
+                if in_zone_rule and best_rule:
+                    alert_types = (
+                        ["intrusion"] if best_rule.rule_type == "zone"
+                        else [best_rule.alert_type]
+                    )
+                else:
+                    alert_types = []
 
-            # Supplement with motion-pattern climbing detection.
-            # This fires independently of configured rules so climbing is detected
-            # even when no Firebase "climbing" rule is set up by the operator.
+            # Kinematic climbing detection — fires ONLY on Y-axis displacement evidence.
+            # Runs after all zone/rule logic so it is structurally independent.
             if self._is_climbing(person) and "climbing" not in alert_types:
                 alert_types = list(alert_types) + ["climbing"]
 
@@ -280,7 +288,15 @@ class SpatialEngine:
         newest_y = window[-1][1]
         net_rise = oldest_y - newest_y   # positive → subject rose in the frame
 
-        return net_rise >= 12
+        if net_rise < 12:
+            return False
+
+        # Directional consistency guard: at least 60 % of consecutive centroid
+        # pairs must show upward movement (y decreasing).  This rejects subjects
+        # who are merely walking diagonally or approaching the camera on a slight
+        # incline, where net_rise can exceed 12 px from positional drift alone.
+        upward_steps = sum(1 for a, b in zip(window[:-1], window[1:]) if b[1] < a[1])
+        return upward_steps / (len(window) - 1) >= 0.60
 
     # ------------------------------------------------------------------
     # Hybrid zone scoring (drawn zones from zone_store)
