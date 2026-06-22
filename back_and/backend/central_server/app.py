@@ -69,12 +69,13 @@ _alert_recorder = AlertRecorder()
 # Wired up fully once create_app() registers _annotate / process_tracking_payload
 # below; instantiated here so the api blueprint and /api/health can reference it.
 _video_manager = VideoWorkerManager(
-    socketio       = socketio,
-    ingest_fn      = lambda *a, **kw: process_tracking_payload(*a, **kw),
-    annotate_fn    = lambda *a, **kw: _annotate(*a, **kw),
-    zone_fn        = zone_store.get,
-    cache_fn       = lambda camera_id: _annotation_cache.get(camera_id, {}),
-    frame_hook     = _alert_recorder.push_frame,
+    socketio         = socketio,
+    ingest_fn        = lambda *a, **kw: process_tracking_payload(*a, **kw),
+    annotate_fn      = lambda *a, **kw: _annotate(*a, **kw),
+    zone_fn          = zone_store.get,
+    cache_fn         = lambda camera_id: _annotation_cache.get(camera_id, {}),
+    clear_cache_fn   = lambda camera_id: _annotation_cache.pop(camera_id, None),
+    frame_hook       = _alert_recorder.push_frame,
 )
 
 # Pending camera configs waiting to be delivered to the Edge Node via /ingest response.

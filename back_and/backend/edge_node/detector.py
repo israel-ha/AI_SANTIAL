@@ -12,10 +12,13 @@ It receives frames and returns the current tracking state dictionary.
 """
 import logging
 import math
+import os
 import time
 import cv2
 import numpy as np
 from typing import Dict, List, Tuple
+
+os.environ.setdefault("YOLO_AUTOINSTALL", "False")   # belt-and-suspenders; primary guard is in model_manager.py
 
 from ultralytics import YOLO
 
@@ -40,10 +43,20 @@ class Detector:
             self._model = YOLO(config.YOLO_MODEL_PATH)
         self._extractor  = FeatureExtractor()
         self._tracked: Dict[int, dict] = {}
-        self._frame_count = 0
-        self._frame_w     = 1280
-        self._frame_h     = 720
+        self._frame_count    = 0
+        self._frame_w        = 1280
+        self._frame_h        = 720
+        self._zero_det_count = 0   # counts consecutive zero-detection frames for diagnostics
         self._safe_fuse()
+        # Print the model's class map — class 0 must be 'person' for COCO-trained models.
+        cls_names = getattr(self._model, "names", {})
+        log.info("Detector: model class map (first 5) — %s", dict(list(cls_names.items())[:5]))
+        if cls_names.get(0) != "person":
+            log.warning(
+                "Detector: class 0 is %r — classes=[0] filter will NOT detect people! "
+                "Ensure yolov8n.pt is a COCO-trained model.",
+                cls_names.get(0),
+            )
         log.info(
             "Detector ready — conf=%.2f  imgsz=%d  every_n=%d  tracker=%s",
             config.YOLO_CONF_THRESHOLD,
@@ -82,6 +95,7 @@ class Detector:
         Bypasses the YOLO_EVERY_N_FRAMES gate so the thread runs at full
         CPU speed without accumulating an artificial call counter.
         """
+        self._frame_count += 1   # keeps _log_every throttle working correctly
         self._frame_h, self._frame_w = frame.shape[:2]
         self._run_yolo(frame)
         self._cleanup()
@@ -212,6 +226,16 @@ class Detector:
                     "Tracker IDs assigned: 0.",
                     self._frame_count, config.YOLO_CONF_THRESHOLD,
                 )
+                self._zero_det_count += 1
+                if self._zero_det_count <= 5:
+                    # Log frame pixel stats to distinguish black frames from threshold issues.
+                    log.warning(
+                        "[Detector] zero-det diagnostic #%d — shape=%s  mean=%.1f  "
+                        "min=%d  max=%d.  mean≈0 → video frames are black/empty "
+                        "(video source problem);  mean>0 → model or threshold issue.",
+                        self._zero_det_count, frame.shape,
+                        float(frame.mean()), int(frame.min()), int(frame.max()),
+                    )
             else:
                 log.info(
                     "[Detector] frame %d — Raw detections: %d  |  "

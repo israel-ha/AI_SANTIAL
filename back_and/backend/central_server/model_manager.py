@@ -7,7 +7,14 @@ shared by every VideoWorker created over the lifetime of the process (e.g. when
 the user toggles between Live and Demo video sources), instead of being
 reloaded from disk on every switch.
 """
+import os
 import threading
+
+# Must be set before ultralytics is imported — ultralytics reads YOLO_AUTOINSTALL
+# once at module load time to decide whether to run pip auto-install for lap.
+# With lap==0.5.13 pinned this check passes instantly, but the env var is a
+# second layer of defence so a stale pip cache never triggers a startup delay.
+os.environ.setdefault("YOLO_AUTOINSTALL", "False")
 
 from ultralytics import YOLO
 

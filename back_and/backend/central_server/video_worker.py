@@ -267,18 +267,21 @@ class VideoWorker(threading.Thread):
 class VideoWorkerManager:
     """Owns the single active VideoWorker and switches between live/demo sources."""
 
-    def __init__(self, socketio, ingest_fn, annotate_fn, zone_fn, cache_fn, frame_hook=None):
-        self._socketio    = socketio
-        self._ingest_fn   = ingest_fn
-        self._annotate_fn = annotate_fn
-        self._zone_fn     = zone_fn
-        self._cache_fn    = cache_fn
-        self._frame_hook  = frame_hook   # forwarded to each VideoWorker
+    def __init__(self, socketio, ingest_fn, annotate_fn, zone_fn, cache_fn,
+                 clear_cache_fn=None, frame_hook=None):
+        self._socketio       = socketio
+        self._ingest_fn      = ingest_fn
+        self._annotate_fn    = annotate_fn
+        self._zone_fn        = zone_fn
+        self._cache_fn       = cache_fn
+        self._clear_cache_fn = clear_cache_fn   # (camera_id) → clears stale annotation cache on switch
+        self._frame_hook     = frame_hook
         self._worker:    "VideoWorker | None" = None
         self._mode:      str  = "stopped"
         self._camera_id: str  = config.CAMERA_ID
         self._source_desc: str = ""
         self._filename:  "str | None" = None
+        self._switch_lock = threading.Lock()   # prevents overlapping switch() calls
 
     def switch(self, mode: str, camera_id: str = config.CAMERA_ID, filename: str = None) -> None:
         """Stop the current worker (if any) and start a new one for `mode`.
@@ -292,7 +295,17 @@ class VideoWorkerManager:
         unavailable (missing local file, no demo videos in DEMO_VIDEOS_DIR,
         or the requested filename doesn't exist there).
         Raises ValueError if `filename` is not a bare filename.
+        Returns immediately (no-op) if a previous switch is still in progress.
         """
+        if not self._switch_lock.acquire(blocking=False):
+            print(f"[INFO] VideoWorkerManager: switch() already in progress — ignoring duplicate call (mode={mode!r}).")
+            return
+        try:
+            self._do_switch(mode, camera_id, filename)
+        finally:
+            self._switch_lock.release()
+
+    def _do_switch(self, mode: str, camera_id: str, filename) -> None:
         mode = mode.lower()
         if mode not in ("live", "demo"):
             raise ValueError(f"Unknown video mode: {mode!r}")
@@ -306,9 +319,14 @@ class VideoWorkerManager:
             filename    = source.filename
             source_desc = source.path
 
-        # Only stop the previous worker once the new source has loaded successfully,
-        # so a failed switch leaves the previous mode running uninterrupted.
+        # Hard stop: block until the previous worker thread is confirmed dead.
+        # This guarantees no frame emission overlap between old and new workers.
         self._stop_current()
+
+        # Flush stale bounding-box cache so the new video's first frames are
+        # rendered clean — no boxes from the previous video bleeding through.
+        if self._clear_cache_fn is not None:
+            self._clear_cache_fn(camera_id)
 
         detector = Detector(model=model_manager.get_model())
         worker = VideoWorker(
@@ -332,10 +350,18 @@ class VideoWorkerManager:
         print(f"[INFO] VideoWorkerManager: switched to '{mode}' mode (source={source_desc}).")
 
     def _stop_current(self) -> None:
-        if self._worker is not None:
-            self._worker.stop()
-            self._worker.join(timeout=5)
-            self._worker = None
+        if self._worker is None:
+            return
+        self._worker.stop()
+        # VideoWorker.run() joins its two sub-threads (yolo + ingest, 2 s each)
+        # before exiting — typical stop is < 5 s.  8 s gives a generous margin.
+        self._worker.join(timeout=8)
+        if self._worker.is_alive():
+            print(
+                f"[WARNING] VideoWorkerManager: worker {self._worker.name} "
+                f"did not stop within 8 s — proceeding anyway (thread is daemon)."
+            )
+        self._worker = None   # always clear; stale daemon thread will die with the process
 
     def status(self) -> dict:
         return {

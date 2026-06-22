@@ -30,6 +30,7 @@ firebase-admin
 torch
 torchvision
 ultralytics>=8.3.0
+lap==0.5.13
 Pillow
 numpy<2
 opencv-python-headless
