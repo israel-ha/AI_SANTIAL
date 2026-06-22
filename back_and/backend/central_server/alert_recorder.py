@@ -25,8 +25,9 @@ import queue
 import shutil
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Dict, Optional
 
 import cv2
 
@@ -38,6 +39,12 @@ from shared import config
 BUFFER_SIZE = 50       # pre-alert frames in rolling deque  (≈ 5 s at 10 fps)
 POST_FRAMES = 50       # frames captured after the alert    (≈ 5 s at 10 fps)
 WRITE_FPS   = float(max(config.STREAM_FPS, 1))
+
+# Minimum seconds between climbing clip recordings per camera.
+# Belt-and-suspenders guard: AlertManager already gates at 10 s per local_id;
+# this guard prevents back-to-back trigger() calls from abandoning each other's
+# in-progress recordings (newer trigger overwrites _post_frames and _pending_meta).
+_CLIMB_CLIP_COOLDOWN = 10.0
 
 ALERTS_DIR = os.path.join(config.BASE_DIR, "assets", "alerts")
 ALERTS_DB  = os.path.join(ALERTS_DIR, "alerts_db.json")
@@ -65,6 +72,9 @@ class AlertRecorder:
         self._post_frames: Optional[list] = None
         self._post_needed: int = 0
         self._pending_meta: Optional[dict] = None
+
+        # Per-camera climbing clip cooldown (camera_id → last armed unix timestamp)
+        self._last_climb_ts: Dict[str, float] = {}
 
         # Background writer
         self._write_queue: queue.Queue = queue.Queue()
@@ -109,6 +119,20 @@ class AlertRecorder:
         If a recording is already in progress it is replaced (newer alert wins).
         Thread-safe.
         """
+        # Gate climbing clips: prevent a ReID-induced storm from spawning
+        # back-to-back triggers that each overwrite the previous recording.
+        if alert_type == "climbing":
+            now_ts   = time.time()
+            last_ts  = self._last_climb_ts.get(camera_id, 0.0)
+            elapsed  = now_ts - last_ts
+            if elapsed < _CLIMB_CLIP_COOLDOWN:
+                print(
+                    f"[INFO] AlertRecorder: climbing clip suppressed — "
+                    f"cooldown active ({elapsed:.1f}s < {_CLIMB_CLIP_COOLDOWN}s)"
+                )
+                return
+            self._last_climb_ts[camera_id] = now_ts
+
         now      = datetime.now(timezone.utc)
         slug     = now.strftime("%Y%m%d_%H%M%S")
         filename = f"alert_{slug}_{alert_id[-8:]}.mp4"

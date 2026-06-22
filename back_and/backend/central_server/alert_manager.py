@@ -30,6 +30,12 @@ _SEVERITY: Dict[str, str] = {
     "intrusion":           "high",
 }
 
+# Secondary debounce for climbing keyed on the ByteTrack local_id.
+# Guards against ReID instability: if the same physical person is assigned a
+# new global_id after a brief occlusion, the 60-s primary cooldown would reset,
+# allowing a second alert storm.  This 10-s local-id gate closes that window.
+_CLIMB_LOCAL_COOLDOWN = 10.0   # seconds
+
 
 class AlertManager:
 
@@ -38,10 +44,11 @@ class AlertManager:
         firebase: FirebaseClient,
         emit_fn:  Optional[Callable] = None,
     ):
-        self._firebase   = firebase
-        self._emit       = emit_fn
+        self._firebase              = firebase
+        self._emit                  = emit_fn
         self._on_alert:  Optional[Callable] = None
-        self._cooldowns: Dict[str, float] = {}
+        self._cooldowns:             Dict[str, float] = {}
+        self._climb_local_cooldowns: Dict[str, float] = {}   # camera_id:local_id → last ts
 
     def set_emit_fn(self, fn: Callable):
         self._emit = fn
@@ -74,6 +81,10 @@ class AlertManager:
             for alert_type, trigger_type in triggers:
                 if not self._cooldown_ok(camera_id, result.global_id, alert_type):
                     continue
+                # Secondary debounce: climbing keyed on ByteTrack local_id so
+                # a ReID global_id change cannot reset the storm guard.
+                if alert_type == "climbing" and not self._climb_local_ok(camera_id, result.local_id):
+                    continue
 
                 alert = self._build(
                     result, alert_type, trigger_type,
@@ -99,6 +110,16 @@ class AlertManager:
             self._cooldowns[key] = now
             return True
         return False
+
+    def _climb_local_ok(self, camera_id: str, local_id: int) -> bool:
+        """10-second climbing debounce keyed on ByteTrack local_id."""
+        key  = f"{camera_id}:local_{local_id}"
+        now  = time.time()
+        last = self._climb_local_cooldowns.get(key, 0.0)
+        if now - last < _CLIMB_LOCAL_COOLDOWN:
+            return False
+        self._climb_local_cooldowns[key] = now
+        return True
 
     def _build(
         self,

@@ -104,6 +104,9 @@ const LiveRoom = () => {
   const videoContainerRef = useRef(null);
   const prevPersonsRef    = useRef({});
   const bannerTimersRef   = useRef({});   // global_id → expiry timeout handle
+  // Cross-source deduplication: prevents the same alert from appearing twice
+  // when it arrives via both Socket.IO (real-time) and Firebase (persistence).
+  const seenAlertIdsRef   = useRef(new Set());
 
   const [threatBanners, setThreatBanners] = useState(new Map());   // global_id → banner state
 
@@ -143,11 +146,13 @@ const LiveRoom = () => {
       setRestrictedZones(data.zones || []);
     });
 
-    socketRef.current.on('alert_batch', (detections) => {
-      setActiveDetections(detections);
-      if (detections.length > 0) {
-        setAlerts(prev => [detections[0], ...prev].slice(0, MAX_LOG_ENTRIES));
-      }
+    // Backend emits 'alert_new' (one AlertDocument per event).
+    // Deduplicated via seenAlertIdsRef so a Firebase onChildAdded echo of the
+    // same alert_id is silently dropped on the client side.
+    socketRef.current.on('alert_new', (alert) => {
+      if (!alert?.alert_id || seenAlertIdsRef.current.has(alert.alert_id)) return;
+      seenAlertIdsRef.current.add(alert.alert_id);
+      setAlerts(prev => [alert, ...prev].slice(0, MAX_LOG_ENTRIES));
     });
 
     socketRef.current.on('tracking_update', (payload) => {
@@ -254,9 +259,11 @@ const LiveRoom = () => {
     const alertsRef  = ref(database, '/alerts/CAM_1001');
     const unsubscribe = onChildAdded(alertsRef, (snapshot) => {
       const alert = snapshot.val();
-      if (alert && alert.status === 'open') {
-        setAlerts(prev => [alert, ...prev].slice(0, MAX_LOG_ENTRIES));
-      }
+      if (!alert?.alert_id || alert.status !== 'open') return;
+      // Skip if already shown via socket (real-time path arrived first).
+      if (seenAlertIdsRef.current.has(alert.alert_id)) return;
+      seenAlertIdsRef.current.add(alert.alert_id);
+      setAlerts(prev => [alert, ...prev].slice(0, MAX_LOG_ENTRIES));
     });
     return () => unsubscribe();
   }, []);
