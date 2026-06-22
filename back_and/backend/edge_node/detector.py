@@ -73,6 +73,20 @@ class Detector:
         self._cleanup()
         return self._tracked
 
+    def run_inference(self, frame: np.ndarray) -> Dict[int, dict]:
+        """
+        Run YOLO inference unconditionally on the given frame.
+
+        Use this instead of process_frame() when inference is driven by a
+        dedicated background thread that already manages its own cadence.
+        Bypasses the YOLO_EVERY_N_FRAMES gate so the thread runs at full
+        CPU speed without accumulating an artificial call counter.
+        """
+        self._frame_h, self._frame_w = frame.shape[:2]
+        self._run_yolo(frame)
+        self._cleanup()
+        return self._tracked
+
     @property
     def tracked(self) -> Dict[int, dict]:
         return self._tracked

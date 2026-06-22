@@ -93,6 +93,11 @@ RISK_SLOW_POINTS           = 15   # average velocity below threshold (slow / sta
 LOITERING_AREA_MAX         = 150.0   # pixels — diagonal spread ceiling for "confined"
 LOITERING_VELOCITY_MAX     = 5.0     # pixels/frame — velocity ceiling for "slow"
 
+# Minimum dwell time (seconds) before loitering fires for operator-drawn zones
+# (zone_store). Rule-based zones use rule.conditions.min_dwell_seconds instead.
+# 120 s = 2 minutes — prevents false positives from brief stops in view of camera.
+ZONE_DEFAULT_DWELL_SECONDS = int(os.environ.get("ZONE_DEFAULT_DWELL_SECONDS", 120))
+
 # ---------------------------------------------------------------------------
 # Dynamic Threat Memory  (threat_memory.py)
 # ---------------------------------------------------------------------------

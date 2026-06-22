@@ -108,32 +108,36 @@ class VideoWorker(threading.Thread):
 
     def run(self):
         # ──────────────────────────────────────────────────────────────────────
-        # Background YOLO thread
-        # The stream loop deposits the latest source frame here; the YOLO
-        # thread picks it up and runs inference without blocking the emit loop.
+        # Shared frame slot: the stream loop writes the latest raw frame here.
+        # The YOLO thread reads from it continuously without blocking the loop.
+        #
+        # A monotonic sequence counter lets the YOLO thread skip frames it has
+        # already processed instead of re-running inference on the same image.
         # ──────────────────────────────────────────────────────────────────────
-        _yolo_lock  = threading.Lock()
-        _yolo_frame = [None]   # single-slot; YOLO always processes the newest frame
-        _yolo_event = threading.Event()
+        _frame_lock = threading.Lock()
+        _latest_frame = [None]   # newest raw frame from the video source
+        _frame_seq    = [0]      # incremented each time a new frame is stored
 
+        # ── YOLO worker — runs at full CPU speed, never blocks the stream ──
         def _yolo_worker():
+            last_seq = -1
             while not self._stop_event.is_set():
-                if not _yolo_event.wait(timeout=0.05):
+                with _frame_lock:
+                    seq   = _frame_seq[0]
+                    frame = _latest_frame[0]
+                if seq == last_seq or frame is None:
+                    # No new frame yet — yield briefly and try again.
+                    time.sleep(0.005)
                     continue
-                _yolo_event.clear()
-                with _yolo_lock:
-                    frame = _yolo_frame[0]
-                if frame is not None:
-                    try:
-                        self.detector.process_frame(frame)
-                    except Exception as exc:
-                        print(f"[WARN] VideoWorker[{self.camera_id}]: YOLO error — {exc}")
+                last_seq = seq
+                try:
+                    # run_inference() bypasses YOLO_EVERY_N_FRAMES so this
+                    # thread runs at maximum CPU throughput.
+                    self.detector.run_inference(frame)
+                except Exception as exc:
+                    print(f"[WARN] VideoWorker[{self.camera_id}]: YOLO — {exc}")
 
-        # ──────────────────────────────────────────────────────────────────────
-        # Background ingest thread
-        # The AI pipeline (Re-ID, scoring, Firebase) can take 50-200 ms.
-        # Running it in a background thread ensures it never pauses the stream.
-        # ──────────────────────────────────────────────────────────────────────
+        # ── Ingest worker — AI pipeline off the critical path ─────────────
         _ingest_lock  = threading.Lock()
         _ingest_data  = [None]   # (camera_id, persons, fw, fh, timestamp)
         _ingest_event = threading.Event()
@@ -151,7 +155,7 @@ class VideoWorker(threading.Thread):
                     cam, persons, fw, fh, ts = data
                     self.ingest_fn(cam, persons, fw, fh, ts)
                 except Exception as exc:
-                    print(f"[ERROR] VideoWorker[{self.camera_id}]: ingest error — {exc}")
+                    print(f"[ERROR] VideoWorker[{self.camera_id}]: ingest — {exc}")
 
         yolo_thread   = threading.Thread(target=_yolo_worker,   daemon=True,
                                          name=f"yolo-{self.camera_id}")
@@ -160,40 +164,35 @@ class VideoWorker(threading.Thread):
         yolo_thread.start()
         ingest_thread.start()
 
-        last_send        = 0.0
-        last_emit        = 0.0
-        last_yolo_submit = 0.0
-        stream_interval  = 1.0 / max(config.STREAM_FPS, 1)
-        frame_interval   = 1.0 / max(self.source.fps, 1.0)
-        # Submit a frame to YOLO at the configured inference cadence.
-        yolo_interval    = config.YOLO_EVERY_N_FRAMES * frame_interval
+        # Stream loop paces at STREAM_FPS — one frame read + one emit per tick.
+        stream_interval = 1.0 / max(config.STREAM_FPS, 1)
+        last_send       = 0.0
 
         print(
             f"[INFO] VideoWorker[{self.camera_id}]: started — "
-            f"src={self.source.fps:.1f} fps  stream={config.STREAM_FPS} fps  "
-            f"yolo every {yolo_interval*1000:.0f} ms"
+            f"stream={config.STREAM_FPS} fps  yolo=continuous background  "
+            f"src={self.source.fps:.1f} fps"
         )
 
         while not self._stop_event.is_set():
-            loop_start = time.time()
+            t0 = time.time()
 
+            # ── 1. Read next frame from source ─────────────────────────────
             frame = self.source.read()
             if frame is None:
-                time.sleep(0.05)
+                time.sleep(0.02)
                 continue
+
+            # Share with YOLO thread (atomic under CPython GIL + Lock)
+            with _frame_lock:
+                _latest_frame[0] = frame
+                _frame_seq[0]   += 1
 
             now = time.time()
 
-            # ── Submit frame to YOLO background thread ─────────────────────
-            if now - last_yolo_submit >= yolo_interval:
-                with _yolo_lock:
-                    _yolo_frame[0] = frame
-                _yolo_event.set()
-                last_yolo_submit = now
-
-            # ── Zone containment (reads tracker state non-blockingly) ───────
-            # detector.tracked is updated in-place by the YOLO thread; reading
-            # it here is safe because the GIL serialises dict access.
+            # ── 2. Zone containment (reads detector.tracked — GIL-safe) ────
+            # detector.tracked is updated by the YOLO thread; dict access is
+            # serialised by the GIL so no additional lock is needed here.
             inside_zone_ids: set = set()
             zones = self.zone_fn() or []
             if zones:
@@ -203,17 +202,17 @@ class VideoWorker(threading.Thread):
                     for z in zones
                     if len(z.get("points", [])) >= 3
                 ]
-                for pid, data in self.detector.tracked.items():
-                    if not data.get("box_active"):
+                for pid, d in list(self.detector.tracked.items()):
+                    if not d.get("box_active"):
                         continue
-                    x1, y1, x2, y2 = data["box"]
+                    x1, y1, x2, y2 = d["box"]
                     cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
                     for poly in all_polys:
                         if _point_in_polygon(cx, cy, poly):
                             inside_zone_ids.add(pid)
                             break
 
-            # ── Signal ingest thread (non-blocking) ────────────────────────
+            # ── 3. Queue AI ingest payload (non-blocking) ──────────────────
             if now - last_send >= config.SEND_INTERVAL_SECONDS:
                 payload = build_payload(
                     detector        = self.detector,
@@ -231,35 +230,31 @@ class VideoWorker(threading.Thread):
                     _ingest_event.set()
                 last_send = now
 
-            # ── Annotate and stream at STREAM_FPS — never blocked ──────────
-            if now - last_emit >= stream_interval:
-                cached    = self.cache_fn(self.camera_id)
-                # 1. Draw bounding boxes + tracking labels
-                annotated = self.annotate_fn(
-                    frame,
-                    cached.get("risk_results",    []),
-                    cached.get("global_ids",      {}),
-                    cached.get("effective_times", {}),
-                    cached.get("person_map",      {}),
-                )
-                # 2. Burn zone polygons so clips include them for forensics
-                if zones:
-                    annotated = _draw_zones_cv(annotated, zones)
-                # 3. Feed the fully-annotated frame to the alert recorder buffer
-                if self.frame_hook:
-                    try:
-                        self.frame_hook(annotated)
-                    except Exception:
-                        pass   # never let the recorder crash the live feed
-                # 4. Encode and stream to the frontend
-                _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 65])
-                out_b64 = base64.b64encode(buf).decode("utf-8")
-                self.socketio.emit("processed_frame", f"data:image/jpeg;base64,{out_b64}")
-                last_emit = now
+            # ── 4. Annotate + encode + emit ────────────────────────────────
+            # annotate_fn reads from the cache written by the ingest thread;
+            # it is a fast OpenCV drawing call that never blocks on YOLO.
+            cached    = self.cache_fn(self.camera_id)
+            annotated = self.annotate_fn(
+                frame,
+                cached.get("risk_results",    []),
+                cached.get("global_ids",      {}),
+                cached.get("effective_times", {}),
+                cached.get("person_map",      {}),
+            )
+            if zones:
+                annotated = _draw_zones_cv(annotated, zones)
+            if self.frame_hook:
+                try:
+                    self.frame_hook(annotated)
+                except Exception:
+                    pass   # never let the recorder crash the stream
+            _, buf  = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 65])
+            out_b64 = base64.b64encode(buf).decode("utf-8")
+            self.socketio.emit("processed_frame", f"data:image/jpeg;base64,{out_b64}")
 
-            # ── Constant pace — no frame skipping ──────────────────────────
-            elapsed    = time.time() - loop_start
-            sleep_time = frame_interval - elapsed
+            # ── 5. Strict pace at STREAM_FPS ───────────────────────────────
+            elapsed    = time.time() - t0
+            sleep_time = stream_interval - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
 

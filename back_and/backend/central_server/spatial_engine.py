@@ -174,7 +174,7 @@ class SpatialEngine:
                 final_score = best_zone_score
                 final_rule  = None
                 final_sens  = 3     # neutral default sensitivity for zone-store zones
-                final_dwell = 30
+                final_dwell = config.ZONE_DEFAULT_DWELL_SECONDS
                 alert_types = ["intrusion"] if best_zone_score >= config.RISK_ALERT_THRESHOLD else []
             else:
                 final_score = best_rule_score
@@ -256,8 +256,8 @@ class SpatialEngine:
     @staticmethod
     def _is_climbing(person) -> bool:
         """
-        Detect climbing via net vertical displacement over the last 35 positions
-        (~1.5–2 s of history at 20 fps).
+        Detect climbing via net vertical displacement over the last 40 positions
+        (~2 s of history at the YOLO background thread's inference rate).
 
         Net displacement is resilient to bounding-box jitter: individual frames
         may bounce up/down, but a true climber shows consistent upward travel
@@ -266,17 +266,21 @@ class SpatialEngine:
         In image coordinates Y increases downward, so moving upward (climbing)
         means Y *decreases*:
             net_rise = oldest_y − newest_y   →  positive = moved upward
+
+        12-pixel threshold accommodates distant CCTV cameras where subjects
+        appear small. Using only 5 positions as the minimum prevents the
+        first few frames after a track re-assignment from blocking detection.
         """
         positions = person.positions
-        if len(positions) < 10:
+        if len(positions) < 5:
             return False
 
-        window   = positions[-35:]   # last 35 centroids (~1.5–2 s at 20 fps)
+        window   = positions[-40:]   # last 40 centroids (~2 s of YOLO inference history)
         oldest_y = window[0][1]
         newest_y = window[-1][1]
         net_rise = oldest_y - newest_y   # positive → subject rose in the frame
 
-        return net_rise >= 30
+        return net_rise >= 12
 
     # ------------------------------------------------------------------
     # Hybrid zone scoring (drawn zones from zone_store)

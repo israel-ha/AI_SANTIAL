@@ -2,6 +2,6 @@ tracker_type: bytetrack
 track_high_thresh: 0.25   # was 0.60 — detections above this go into the high-confidence pool
 track_low_thresh: 0.10    # was 0.20 — detections above this go into the low-confidence pool
 new_track_thresh: 0.25    # was 0.70 — min confidence to start a new track (was killing all tracks)
-track_buffer: 60          # frames to keep a lost track alive
+track_buffer: 90          # frames to keep a lost track alive (~3 s at 30 YOLO fps; handles 2-3 s occlusions)
 match_thresh: 0.80        # IoU threshold for matching tracks to detections
 fuse_score: True
