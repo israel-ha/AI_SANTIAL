@@ -370,12 +370,17 @@ def create_app() -> Flask:
     _alerts.set_on_alert_fn(_on_alert)
 
     # Load persisted restricted zone from disk.
+    print("[BOOT] create_app: loading zone store …")
     zone_store.load()
+    print("[BOOT] create_app: zone store loaded.")
 
     # Seed in-memory events log from Firebase alert history.
+    print("[BOOT] create_app: seeding events log from Firebase …")
     _init_events_log()
+    print("[BOOT] create_app: events log seeded.")
 
     # REST blueprints
+    print("[BOOT] create_app: registering REST blueprints …")
     init_rules_api(_store, _firebase)
     app.register_blueprint(rules_bp)
 
@@ -390,12 +395,15 @@ def create_app() -> Flask:
 
     # Socket.IO event handlers
     register_socket_events(socketio)
+    print("[BOOT] create_app: blueprints and socket handlers registered.")
 
     # Start the default video worker (Live or Demo, per config.DEFAULT_VIDEO_MODE).
     # Boot continues even if the video file/asset is missing — /api/health and
     # /api/video-source will report status="stopped" until a valid mode is set.
+    print(f"[BOOT] create_app: starting default video worker (mode={config.DEFAULT_VIDEO_MODE!r}) …")
     try:
         _video_manager.switch(config.DEFAULT_VIDEO_MODE)
+        print(f"[BOOT] create_app: video worker started successfully.")
     except Exception as exc:
         print(f"[WARNING] VideoWorkerManager: could not start '{config.DEFAULT_VIDEO_MODE}' mode at startup — {exc}")
 

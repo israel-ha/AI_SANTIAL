@@ -353,6 +353,7 @@ class VideoWorkerManager:
         if mode not in ("live", "demo"):
             raise ValueError(f"Unknown video mode: {mode!r}")
 
+        print(f"[INFO] VideoWorkerManager: opening video source for mode={mode!r} …")
         if mode == "live":
             source      = LoopingFileSource(config.LIVE_VIDEO_PATH)
             source_desc = config.LIVE_VIDEO_PATH
@@ -361,10 +362,13 @@ class VideoWorkerManager:
             source      = DemoVideoSource(filename)
             filename    = source.filename
             source_desc = source.path
+        print(f"[INFO] VideoWorkerManager: video source opened — {source_desc}")
 
         # Hard stop: block until the previous worker thread is confirmed dead.
         # This guarantees no frame emission overlap between old and new workers.
+        print("[INFO] VideoWorkerManager: stopping previous worker (if any) …")
         self._stop_current()
+        print("[INFO] VideoWorkerManager: previous worker stopped.")
 
         # Flush stale bounding-box cache so the new video's first frames are
         # rendered clean — no boxes from the previous video bleeding through.
@@ -377,7 +381,9 @@ class VideoWorkerManager:
         new_run_id = uuid.uuid4()
         self._active_run_id[0] = new_run_id
 
+        print("[INFO] VideoWorkerManager: loading YOLO model (may take a moment on first load) …")
         detector = Detector(model=model_manager.get_model())
+        print("[INFO] VideoWorkerManager: YOLO model ready — starting VideoWorker thread …")
         worker = VideoWorker(
             camera_id      = camera_id,
             source         = source,

@@ -32,15 +32,22 @@ if __name__ == "__main__":
     print(f"[INFO] Firebase DB: {config.FIREBASE_DB_URL}")
     print()
 
+    print("[BOOT] Step 1/4 — creating Flask app + registering blueprints …")
     app = create_app()
+    print("[BOOT] Step 1/4 — Flask app created.")
 
     # 1. Remove any dummy zones left over from a previous debug session.
+    print("[BOOT] Step 2/4 — purging debug rules …")
     purge_debug_rules()
+    print("[BOOT] Step 2/4 — done.")
 
     # 2. Fetch operator-configured rules from Firebase so the Spatial Engine
     #    has the correct polygons from the very first detection frame.
+    print("[BOOT] Step 3/4 — syncing rules from Firebase …")
     sync_rules_from_firebase()
+    print("[BOOT] Step 3/4 — done.")
 
+    print("[BOOT] Step 4/4 — starting socketio server …")
     print()
     print("[INFO] Server ready. Waiting for Edge Node and Frontend connections …")
     print("[INFO] Frontend WebSocket : ws://localhost:5000")
